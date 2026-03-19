@@ -5,10 +5,8 @@ import random
 import logging
 import webserver
 import json
-from dotenv import load_dotenv
 import os
 from typing import List, Dict
-load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
@@ -48,8 +46,8 @@ def hand_value(hand: List[str]) -> int:
     return total
 
 def save_cp_data():
-    with open(CP_FILE, "w") as file:
-        json.dump(CP_DATA, file, indent=4)
+    with open(CP_FILE, "w") as FILE:
+        json.dump(CP_DATA, FILE, indent=4)
 
 def ensure_user_data(user_id: str):
     if user_id not in CP_DATA:

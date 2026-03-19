@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord.ui import View, Button
 import random
+import logging
 import webserver
 import json
 from dotenv import load_dotenv

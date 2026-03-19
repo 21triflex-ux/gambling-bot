@@ -4,6 +4,7 @@ from discord.ui import View, Button
 import random
 import webserver
 import json
+from dotenv import load_dotenv
 import os
 from typing import List, Dict
 load_dotenv()

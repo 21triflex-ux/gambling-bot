@@ -58,6 +58,7 @@ class GameView(View):
         self.ctx = ctx
         self.player_id = ctx.author.id  # restrict buttons to this user
         self.bet = bet
+        self.original_bet = bet  # store original bet for loss calculation
         self.player_hands = [[draw(), draw()]]
         self.current = 0
         self.dealer = [draw(), draw()]
@@ -102,29 +103,32 @@ class GameView(View):
             await self.finish(interaction)
 
     async def finish(self, interaction):
+        # Dealer draws until >=17
         while hand_value(self.dealer) < 17:
             self.dealer.append(draw())
 
         user = get_user(self.ctx.author.id)
         dealer_val = hand_value(self.dealer)
-        total_change = 0  # net CP change
+        total_change = 0
 
         for hand in self.player_hands:
             val = hand_value(hand)
-            original_bet = self.bet / (2 if self.first_move_done and len(hand) == 3 else 1)
-
             if val > 21:
-                total_change -= original_bet
+                # Bust: lose original bet
+                total_change -= self.original_bet
                 user["losses"] += 1
             elif dealer_val > 21 or val > dealer_val:
-                total_change += self.bet * 2  # win pays 2x bet
+                # Win: gain 2x bet
+                total_change += self.bet * 2
                 user["wins"] += 1
                 user["earned"] += self.bet * 2
             elif val < dealer_val:
-                total_change -= original_bet  # lose only original bet
+                # Lose: lose original bet
+                total_change -= self.original_bet
                 user["losses"] += 1
-            else:  # push
-                total_change += original_bet  # return bet
+            else:
+                # Push: return original bet
+                total_change += self.original_bet
 
         user["cp"] += total_change
         self.done = True

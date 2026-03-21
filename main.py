@@ -56,6 +56,7 @@ class GameView(View):
     def __init__(self, ctx, bet):
         super().__init__(timeout=120)
         self.ctx = ctx
+        self.player_id = ctx.author.id  # restrict buttons to this user
         self.bet = bet
         self.player_hands = [[draw(), draw()]]
         self.current = 0
@@ -63,6 +64,16 @@ class GameView(View):
         self.done = False
         self.split = False
         self.first_move_done = False
+
+    # restrict buttons to original player
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.player_id:
+            await interaction.response.send_message(
+                "❌ Only the player who started the game can use these buttons.",
+                ephemeral=True
+            )
+            return False
+        return True
 
     def current_hand(self):
         return self.player_hands[self.current]

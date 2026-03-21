@@ -4,29 +4,41 @@ from discord.ui import View, Button
 import random
 import json
 import os
+import aiohttp
+from aiohttp import web
+import asyncio
+
 token = os.getenv("DISCORD_TOKEN")
 if not token:
     raise ValueError("DISCORD_TOKEN not set!")
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="$", intents=intents)
+
 CP_FILE = "cp_data.json"
 CP_DATA = {}
+
 if os.path.exists(CP_FILE):
     with open(CP_FILE, encoding="utf-8") as f:
         CP_DATA = json.load(f)
+
 def save():
     with open(CP_FILE, "w", encoding="utf-8") as f:
         json.dump(CP_DATA, f, indent=4)
+
 def ensure_user(uid):
     if uid not in CP_DATA:
         CP_DATA[uid] = {"cp": 1000, "wins": 0, "losses": 0, "pushes": 0}
     return CP_DATA[uid]
+
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
 VALUES = {r: min(10, int(r)) if r.isdigit() else 10 if r in "JQK" else 11 for r in RANKS}
+
 def draw():
     return random.choice(RANKS) + random.choice(SUITS)
+
 def value(hand):
     total = sum(VALUES[c[:-1]] for c in hand)
     aces = sum(1 for c in hand if c.startswith("A"))
@@ -34,6 +46,7 @@ def value(hand):
         total -= 10
         aces -= 1
     return total
+
 class BlackjackView(View):
     def __init__(self, interaction, bet, player, dealer):
         super().__init__(timeout=180)
@@ -44,8 +57,10 @@ class BlackjackView(View):
         self.user = interaction.user
         self.done = False
         self.result = ""
+
     async def interaction_check(self, i):
         return i.user == self.user
+
     def embed(self, reveal=False):
         e = discord.Embed(title="Blackjack", colour=0x006400)
         pt = value(self.player)
@@ -57,24 +72,22 @@ class BlackjackView(View):
             e.colour = 0xFFD700 if "win" in self.result.lower() else 0x8B0000
             e.set_footer(text=self.result)
         return e
+
     async def finish(self, result, win=None):
         self.done = True
         self.result = result
         u = ensure_user(str(self.user.id))
-        if win is True:
-            u["cp"] += self.bet
-            u["wins"] += 1
-        elif win is False:
-            u["cp"] -= self.bet
-            u["losses"] += 1
-        else:
-            u["pushes"] = u.get("pushes", 0) + 1
+        if win is True: u["cp"] += self.bet; u["wins"] += 1
+        elif win is False: u["cp"] -= self.bet; u["losses"] += 1
+        else: u["pushes"] = u.get("pushes", 0) + 1
         save()
         await self.interaction.message.edit(embed=self.embed(True), view=None)
+
     async def update(self, i):
         if self.done: return
         await i.response.defer()
         await i.message.edit(embed=self.embed(), view=self)
+
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, i, _):
         if self.done: return
@@ -83,18 +96,17 @@ class BlackjackView(View):
             await self.finish("Bust! You lose.", False)
         else:
             await self.update(i)
+
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.gray)
     async def stand(self, i, _):
         if self.done: return
         while value(self.dealer) < 17:
             self.dealer.append(draw())
         p, d = value(self.player), value(self.dealer)
-        if d > 21 or p > d:
-            await self.finish("You win!", True)
-        elif p < d:
-            await self.finish("Dealer wins.", False)
-        else:
-            await self.finish("Push!")
+        if d > 21 or p > d: await self.finish("You win!", True)
+        elif p < d: await self.finish("Dealer wins.", False)
+        else: await self.finish("Push!")
+
     @discord.ui.button(label="Double", style=discord.ButtonStyle.blurple)
     async def double(self, i, _):
         if self.done: return
@@ -113,18 +125,18 @@ class BlackjackView(View):
         while value(self.dealer) < 17:
             self.dealer.append(draw())
         p, d = value(self.player), value(self.dealer)
-        if d > 21 or p > d:
-            await self.finish("Double win!", True)
-        elif p < d:
-            await self.finish("Double - dealer wins.", False)
-        else:
-            await self.finish("Push on double!")
+        if d > 21 or p > d: await self.finish("Double win!", True)
+        elif p < d: await self.finish("Double - dealer wins.", False)
+        else: await self.finish("Push on double!")
+
 class BetView(View):
     def __init__(self, interaction):
         super().__init__(timeout=60)
         self.user = interaction.user
+
     async def interaction_check(self, i):
         return i.user == self.user
+
     @staticmethod
     async def start(i, bet):
         u = ensure_user(str(i.user.id))
@@ -137,16 +149,21 @@ class BetView(View):
         d = [draw(), draw()]
         v = BlackjackView(i, bet, p, d)
         await i.response.edit_message(embed=v.embed(), view=v)
+
     @discord.ui.button(label="10 CP", style=discord.ButtonStyle.gray)
     async def b10(self, i, _): await self.start(i, 10)
+
     @discord.ui.button(label="50 CP", style=discord.ButtonStyle.gray)
     async def b50(self, i, _): await self.start(i, 50)
+
     @discord.ui.button(label="100 CP", style=discord.ButtonStyle.green)
     async def b100(self, i, _): await self.start(i, 100)
+
 @bot.command()
 async def blackjack(ctx):
     e = discord.Embed(title="Blackjack - Choose bet", colour=0x006400)
     await ctx.send(embed=e, view=BetView(ctx))
+
 @bot.command()
 async def stats(ctx):
     u = ensure_user(str(ctx.author.id))
@@ -156,8 +173,30 @@ async def stats(ctx):
     e.add_field(name="L", value=u["losses"])
     e.add_field(name="P", value=u.get("pushes", 0))
     await ctx.send(embed=e)
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+
+# ─── Tiny HTTP server to satisfy Render Web Service requirement ───
+async def handle_root(request):
+    return web.Response(text="Discord bot is alive!")
+
+async def run_http():
+    app = web.Application()
+    app.router.add_get('/', handle_root)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 10000)))
+    await site.start()
+    print(f"HTTP server listening on port {os.getenv('PORT', 10000)}")
+
+# ─── Main entry point ───
+async def main():
+    await asyncio.gather(
+        run_http(),          # Start fake web server
+        bot.start(token)     # Start Discord bot
+    )
+
 if __name__ == "__main__":
-    bot.run(token)
+    asyncio.run(main())

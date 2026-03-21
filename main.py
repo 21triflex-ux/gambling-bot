@@ -1,11 +1,9 @@
 import discord
 from discord.ext import commands
-import logging
 from dotenv import load_dotenv
 import os
 import random
 import webserver
-
 from discord.ui import View, button
 
 # ================== SETUP ==================
@@ -18,6 +16,7 @@ bot = commands.Bot(command_prefix='$', intents=intents)
 
 # ================== DATA ==================
 balances = {}
+active_games = {}
 
 START_CP = 1000
 
@@ -63,6 +62,7 @@ class GameView(View):
         self.dealer = [draw(), draw()]
         self.done = False
         self.split = False
+        self.first_move_done = False  # 🔥 used for raise lock
 
     def current_hand(self):
         return self.player_hands[self.current]
@@ -88,7 +88,6 @@ class GameView(View):
         )
 
         embed.set_footer(text=f"Bet: {self.bet} CP | Balance: {balances[self.ctx.author.id]}")
-
         return embed
 
     async def next_hand(self, interaction):
@@ -103,7 +102,6 @@ class GameView(View):
             self.dealer.append(draw())
 
         dealer_val = hand_value(self.dealer)
-
         total_win = 0
 
         for hand in self.player_hands:
@@ -118,13 +116,11 @@ class GameView(View):
 
         balances[self.ctx.author.id] += total_win
 
-        result = f"Result: {total_win:+} CP"
-
         self.done = True
         self.clear_items()
 
         embed = self.get_embed(reveal=True)
-        embed.set_footer(text=result)
+        embed.set_footer(text=f"Result: {total_win:+} CP")
 
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -132,16 +128,20 @@ class GameView(View):
 
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.first_move_done = True  # 🔥 lock raise
+
         hand = self.current_hand()
         hand.append(draw())
 
         if hand_value(hand) > 21:
+            # 💥 FIX: immediately move to next hand
             await self.next_hand(interaction)
         else:
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     @button(label="Stand", style=discord.ButtonStyle.gray)
     async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.first_move_done = True
         await self.next_hand(interaction)
 
     @button(label="Double", style=discord.ButtonStyle.blurple)
@@ -149,6 +149,7 @@ class GameView(View):
         if len(self.current_hand()) != 2:
             return
 
+        self.first_move_done = True
         self.bet *= 2
         self.current_hand().append(draw())
 
@@ -158,10 +159,7 @@ class GameView(View):
     async def split_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         hand = self.current_hand()
 
-        if self.split:
-            return
-
-        if len(hand) != 2:
+        if self.split or len(hand) != 2:
             return
 
         if get_rank(hand[0]) != get_rank(hand[1]):
@@ -169,10 +167,10 @@ class GameView(View):
             return
 
         self.split = True
+        self.first_move_done = True  # 🔥 lock raise after split
 
         h1 = [hand[0], draw()]
         h2 = [hand[1], draw()]
-
         self.player_hands = [h1, h2]
 
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
@@ -181,14 +179,12 @@ class GameView(View):
 
 @bot.command()
 async def balance(ctx):
-    if ctx.author.id not in balances:
-        balances[ctx.author.id] = START_CP
+    balances.setdefault(ctx.author.id, START_CP)
     await ctx.send(f"You have {balances[ctx.author.id]} CP")
 
 @bot.command()
 async def blackjack(ctx, bet: int):
-    if ctx.author.id not in balances:
-        balances[ctx.author.id] = START_CP
+    balances.setdefault(ctx.author.id, START_CP)
 
     if bet <= 0 or bet > balances[ctx.author.id]:
         await ctx.send("Invalid bet.")
@@ -197,7 +193,31 @@ async def blackjack(ctx, bet: int):
     balances[ctx.author.id] -= bet
 
     view = GameView(ctx, bet)
+    active_games[ctx.author.id] = view
+
     await ctx.send(embed=view.get_embed(), view=view)
+
+# 🔥 NEW COMMAND
+@bot.command()
+async def raisebet(ctx, amount: int):
+    if ctx.author.id not in active_games:
+        await ctx.send("No active game.")
+        return
+
+    game = active_games[ctx.author.id]
+
+    if game.first_move_done:
+        await ctx.send("You can only raise before your first move.")
+        return
+
+    if amount <= 0 or amount > balances[ctx.author.id]:
+        await ctx.send("Invalid raise.")
+        return
+
+    balances[ctx.author.id] -= amount
+    game.bet += amount
+
+    await ctx.send(f"Raised bet by {amount} CP. New bet: {game.bet} CP")
 
 # ================== RUN ==================
 

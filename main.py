@@ -2,8 +2,6 @@ import discord
 from discord.ext import commands
 from discord.ui import View, Button
 import random
-import json
-import os
 
 token = os.getenv("DISCORD_TOKEN")
 if not token:
@@ -12,22 +10,6 @@ if not token:
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="$", intents=intents)
-
-CP_FILE = "cp_data.json"
-CP_DATA = {}
-
-if os.path.exists(CP_FILE):
-    with open(CP_FILE, encoding="utf-8") as f:
-        CP_DATA = json.load(f)
-
-def save():
-    with open(CP_FILE, "w", encoding="utf-8") as f:
-        json.dump(CP_DATA, f, indent=4)
-
-def ensure_user(uid):
-    if uid not in CP_DATA:
-        CP_DATA[uid] = {"cp": 1000, "wins": 0, "losses": 0, "pushes": 0}
-    return CP_DATA[uid]
 
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
@@ -45,10 +27,9 @@ def value(hand):
     return total
 
 class BlackjackView(View):
-    def __init__(self, interaction, bet, player, dealer):
+    def __init__(self, interaction, player, dealer):
         super().__init__(timeout=180)
         self.interaction = interaction
-        self.bet = bet
         self.player = player
         self.dealer = dealer
         self.user = interaction.user
@@ -64,25 +45,14 @@ class BlackjackView(View):
         dt = value(self.dealer) if reveal else "?"
         e.add_field(name="You", value=f"{' '.join(self.player)}\n**{pt}**", inline=False)
         e.add_field(name="Dealer", value=f"{' '.join(self.dealer) if reveal else self.dealer[0] + ' ❓'}\n**{dt}**", inline=False)
-        e.add_field(name="Bet", value=f"{self.bet} CP")
         if self.done:
             e.colour = 0xFFD700 if "win" in self.result.lower() else 0x8B0000
             e.set_footer(text=self.result)
         return e
 
-    async def finish(self, result, win=None):
+    async def finish(self, result):
         self.done = True
         self.result = result
-        u = ensure_user(str(self.user.id))
-        if win is True:
-            u["cp"] += self.bet
-            u["wins"] += 1
-        elif win is False:
-            u["cp"] -= self.bet
-            u["losses"] += 1
-        else:
-            u["pushes"] = u.get("pushes", 0) + 1
-        save()
         await self.interaction.message.edit(embed=self.embed(True), view=None)
 
     async def update(self, i):
@@ -95,7 +65,7 @@ class BlackjackView(View):
         if self.done: return
         self.player.append(draw())
         if value(self.player) > 21:
-            await self.finish("Bust! You lose.", False)
+            await self.finish("Bust! You lose.")
         else:
             await self.update(i)
 
@@ -106,34 +76,26 @@ class BlackjackView(View):
             self.dealer.append(draw())
         p, d = value(self.player), value(self.dealer)
         if d > 21 or p > d:
-            await self.finish("You win!", True)
+            await self.finish("You win!")
         elif p < d:
-            await self.finish("Dealer wins.", False)
+            await self.finish("Dealer wins.")
         else:
             await self.finish("Push!")
 
     @discord.ui.button(label="Double", style=discord.ButtonStyle.blurple)
     async def double(self, i, _):
         if self.done: return
-        u = ensure_user(str(self.user.id))
-        extra = self.bet
-        if u["cp"] < extra:
-            await i.response.send_message("Not enough CP", ephemeral=True)
-            return
-        self.bet += extra
-        u["cp"] -= extra
-        save()
         self.player.append(draw())
         if value(self.player) > 21:
-            await self.finish("Bust on double!", False)
+            await self.finish("Bust on double!")
             return
         while value(self.dealer) < 17:
             self.dealer.append(draw())
         p, d = value(self.player), value(self.dealer)
         if d > 21 or p > d:
-            await self.finish("Double win!", True)
+            await self.finish("Double down win!")
         elif p < d:
-            await self.finish("Double - dealer wins.", False)
+            await self.finish("Double down - dealer wins.")
         else:
             await self.finish("Push on double!")
 
@@ -146,30 +108,19 @@ class BetView(View):
         return i.user == self.user
 
     @staticmethod
-    async def start(i, bet):
-        u = ensure_user(str(i.user.id))
-        if u["cp"] < bet:
-            await i.response.send_message("Not enough CP", ephemeral=True)
-            return
-        u["cp"] -= bet
-        save()
+    async def start(i):
         p = [draw(), draw()]
         d = [draw(), draw()]
-        v = BlackjackView(i, bet, p, d)
+        v = BlackjackView(i, p, d)
         await i.response.edit_message(embed=v.embed(), view=v)
 
-    @discord.ui.button(label="10 CP", style=discord.ButtonStyle.gray)
-    async def b10(self, i, _): await self.start(i, 10)
-
-    @discord.ui.button(label="50 CP", style=discord.ButtonStyle.gray)
-    async def b50(self, i, _): await self.start(i, 50)
-
-    @discord.ui.button(label="100 CP", style=discord.ButtonStyle.green)
-    async def b100(self, i, _): await self.start(i, 100)
+    @discord.ui.button(label="Play", style=discord.ButtonStyle.green)
+    async def play(self, i, _):
+        await self.start(i)
 
 @bot.command()
 async def blackjack(ctx):
-    e = discord.Embed(title="Blackjack - Choose bet", colour=0x006400)
+    e = discord.Embed(title="Blackjack", description="Ready to play?", colour=0x006400)
     await ctx.send(embed=e, view=BetView(ctx))
 
 @bot.event

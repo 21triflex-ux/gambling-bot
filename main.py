@@ -4,9 +4,6 @@ from discord.ui import View, Button
 import random
 import json
 import os
-import aiohttp
-from aiohttp import web
-import asyncio
 
 token = os.getenv("DISCORD_TOKEN")
 if not token:
@@ -65,8 +62,8 @@ class BlackjackView(View):
         e = discord.Embed(title="Blackjack", colour=0x006400)
         pt = value(self.player)
         dt = value(self.dealer) if reveal else "?"
-        e.add_field(name="You", value=f"{'  '.join(self.player)}\n**{pt}**", inline=False)
-        e.add_field(name="Dealer", value=f"{'  '.join(self.dealer) if reveal else self.dealer[0] + ' ❓'}\n**{dt}**", inline=False)
+        e.add_field(name="You", value=f"{' '.join(self.player)}\n**{pt}**", inline=False)
+        e.add_field(name="Dealer", value=f"{' '.join(self.dealer) if reveal else self.dealer[0] + ' ❓'}\n**{dt}**", inline=False)
         e.add_field(name="Bet", value=f"{self.bet} CP")
         if self.done:
             e.colour = 0xFFD700 if "win" in self.result.lower() else 0x8B0000
@@ -77,9 +74,14 @@ class BlackjackView(View):
         self.done = True
         self.result = result
         u = ensure_user(str(self.user.id))
-        if win is True: u["cp"] += self.bet; u["wins"] += 1
-        elif win is False: u["cp"] -= self.bet; u["losses"] += 1
-        else: u["pushes"] = u.get("pushes", 0) + 1
+        if win is True:
+            u["cp"] += self.bet
+            u["wins"] += 1
+        elif win is False:
+            u["cp"] -= self.bet
+            u["losses"] += 1
+        else:
+            u["pushes"] = u.get("pushes", 0) + 1
         save()
         await self.interaction.message.edit(embed=self.embed(True), view=None)
 
@@ -103,9 +105,12 @@ class BlackjackView(View):
         while value(self.dealer) < 17:
             self.dealer.append(draw())
         p, d = value(self.player), value(self.dealer)
-        if d > 21 or p > d: await self.finish("You win!", True)
-        elif p < d: await self.finish("Dealer wins.", False)
-        else: await self.finish("Push!")
+        if d > 21 or p > d:
+            await self.finish("You win!", True)
+        elif p < d:
+            await self.finish("Dealer wins.", False)
+        else:
+            await self.finish("Push!")
 
     @discord.ui.button(label="Double", style=discord.ButtonStyle.blurple)
     async def double(self, i, _):
@@ -125,9 +130,12 @@ class BlackjackView(View):
         while value(self.dealer) < 17:
             self.dealer.append(draw())
         p, d = value(self.player), value(self.dealer)
-        if d > 21 or p > d: await self.finish("Double win!", True)
-        elif p < d: await self.finish("Double - dealer wins.", False)
-        else: await self.finish("Push on double!")
+        if d > 21 or p > d:
+            await self.finish("Double win!", True)
+        elif p < d:
+            await self.finish("Double - dealer wins.", False)
+        else:
+            await self.finish("Push on double!")
 
 class BetView(View):
     def __init__(self, interaction):
@@ -164,39 +172,9 @@ async def blackjack(ctx):
     e = discord.Embed(title="Blackjack - Choose bet", colour=0x006400)
     await ctx.send(embed=e, view=BetView(ctx))
 
-@bot.command()
-async def stats(ctx):
-    u = ensure_user(str(ctx.author.id))
-    e = discord.Embed(title=f"Stats - {ctx.author}", colour=0x00AA00)
-    e.add_field(name="CP", value=u["cp"])
-    e.add_field(name="W", value=u["wins"])
-    e.add_field(name="L", value=u["losses"])
-    e.add_field(name="P", value=u.get("pushes", 0))
-    await ctx.send(embed=e)
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
 
-# ─── Tiny HTTP server to satisfy Render Web Service requirement ───
-async def handle_root(request):
-    return web.Response(text="Discord bot is alive!")
-
-async def run_http():
-    app = web.Application()
-    app.router.add_get('/', handle_root)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 10000)))
-    await site.start()
-    print(f"HTTP server listening on port {os.getenv('PORT', 10000)}")
-
-# ─── Main entry point ───
-async def main():
-    await asyncio.gather(
-        run_http(),          # Start fake web server
-        bot.start(token)     # Start Discord bot
-    )
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    bot.run(token)

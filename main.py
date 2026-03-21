@@ -56,9 +56,9 @@ class GameView(View):
     def __init__(self, ctx, bet):
         super().__init__(timeout=120)
         self.ctx = ctx
-        self.player_id = ctx.author.id  # restrict buttons to this user
+        self.player_id = ctx.author.id
         self.bet = bet
-        self.original_bet = bet  # store original bet for loss calculation
+        self.original_bet = bet  # store for losses
         self.player_hands = [[draw(), draw()]]
         self.current = 0
         self.dealer = [draw(), draw()]
@@ -66,7 +66,6 @@ class GameView(View):
         self.split = False
         self.first_move_done = False
 
-    # restrict buttons to original player
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.player_id:
             await interaction.response.send_message(
@@ -103,38 +102,33 @@ class GameView(View):
             await self.finish(interaction)
 
     async def finish(self, interaction):
-        # Dealer draws until >=17
         while hand_value(self.dealer) < 17:
             self.dealer.append(draw())
 
         user = get_user(self.ctx.author.id)
         dealer_val = hand_value(self.dealer)
-        total_change = 0
+        net_change = 0  # net CP gained/lost
 
         for hand in self.player_hands:
             val = hand_value(hand)
             if val > 21:
-                # Bust: lose original bet
-                total_change -= self.original_bet
+                net_change -= self.original_bet
                 user["losses"] += 1
             elif dealer_val > 21 or val > dealer_val:
-                # Win: gain 2x bet
-                total_change += self.bet * 2
+                net_change += self.bet * 2
                 user["wins"] += 1
                 user["earned"] += self.bet * 2
             elif val < dealer_val:
-                # Lose: lose original bet
-                total_change -= self.original_bet
+                net_change -= self.original_bet
                 user["losses"] += 1
             else:
-                # Push: return original bet
-                total_change += self.original_bet
+                net_change += self.original_bet  # push
 
-        user["cp"] += total_change
+        user["cp"] += net_change
         self.done = True
         self.clear_items()
         embed = self.get_embed(reveal=True)
-        embed.set_footer(text=f"Result: {total_change:+} CP")
+        embed.set_footer(text=f"Result: {net_change:+} CP")
         await interaction.response.edit_message(embed=embed, view=self)
 
     # ================== BUTTONS ==================

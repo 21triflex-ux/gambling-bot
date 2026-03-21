@@ -140,7 +140,11 @@ class GameView(View):
         embed.description = "Playing first hand — finish it!"
         await interaction.response.defer()
         await interaction.message.edit(embed=embed, view=self)
-
+        
+@bot.command()
+async def ping(ctx):
+    await ctx.send("Pong! 🏓")
+    
 @bot.command()
 async def blackjack(ctx):
     player = [draw(), draw()]

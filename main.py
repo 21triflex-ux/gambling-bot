@@ -11,36 +11,34 @@ from discord.ui import View, button
 # ================== SETUP ==================
 load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
-if not token:
-    raise ValueError("DISCORD_TOKEN not set!")
-
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-
 bot = commands.Bot(command_prefix='$', intents=intents)
 
-# ================== GAME LOGIC ==================
+# ================== DATA ==================
+balances = {}
+
+START_CP = 1000
+
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
 
 def draw():
     return random.choice(RANKS) + random.choice(SUITS)
 
-# 🔥 FIXED FUNCTION (no more emoji errors)
+def get_rank(card):
+    return ''.join(ch for ch in card if ch.isalnum())
+
 def hand_value(hand):
     total = 0
     aces = 0
 
     for c in hand:
-        # remove emoji safely
-        rank = ''.join(ch for ch in c if ch.isalnum())
-
+        rank = get_rank(c)
         if rank == "A":
-            aces += 1
             total += 11
+            aces += 1
         elif rank in ["K", "Q", "J"]:
             total += 10
         else:
@@ -52,43 +50,80 @@ def hand_value(hand):
 
     return total
 
-def is_blackjack(hand):
-    return len(hand) == 2 and hand_value(hand) == 21
-
-# ================== UI ==================
+# ================== GAME ==================
 class GameView(View):
-    def __init__(self, player_hand, dealer_hand):
+    def __init__(self, ctx, bet):
         super().__init__(timeout=120)
-        self.player_hand = player_hand
-        self.dealer_hand = dealer_hand
-        self.done = False
-        self.double_done = False
+        self.ctx = ctx
+        self.bet = bet
 
-    def get_embed(self, reveal_dealer=False):
+        self.player_hands = [[draw(), draw()]]
+        self.current = 0
+
+        self.dealer = [draw(), draw()]
+        self.done = False
+        self.split = False
+
+    def current_hand(self):
+        return self.player_hands[self.current]
+
+    def get_embed(self, reveal=False):
         embed = discord.Embed(title="🎴 Blackjack", color=0x006400)
 
-        p_val = hand_value(self.player_hand)
-        d_val = hand_value(self.dealer_hand) if reveal_dealer else "?"
+        for i, hand in enumerate(self.player_hands):
+            marker = "👉 " if i == self.current and not self.done else ""
+            embed.add_field(
+                name=f"{marker}Hand {i+1}",
+                value=f"{' '.join(hand)} ({hand_value(hand)})",
+                inline=False
+            )
+
+        dealer_val = hand_value(self.dealer) if reveal else "?"
+        dealer_cards = ' '.join(self.dealer) if reveal else self.dealer[0] + " ❓"
 
         embed.add_field(
-            name="🃏 You",
-            value=f"{' '.join(self.player_hand)} **({p_val})**",
+            name="Dealer",
+            value=f"{dealer_cards} ({dealer_val})",
             inline=False
         )
 
-        embed.add_field(
-            name="🤖 Dealer",
-            value=f"{' '.join(self.dealer_hand) if reveal_dealer else self.dealer_hand[0] + ' ❓'} **({d_val})**",
-            inline=False
-        )
+        embed.set_footer(text=f"Bet: {self.bet} CP | Balance: {balances[self.ctx.author.id]}")
 
         return embed
 
-    async def end_game(self, interaction, result):
+    async def next_hand(self, interaction):
+        if self.current < len(self.player_hands) - 1:
+            self.current += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await self.finish(interaction)
+
+    async def finish(self, interaction):
+        while hand_value(self.dealer) < 17:
+            self.dealer.append(draw())
+
+        dealer_val = hand_value(self.dealer)
+
+        total_win = 0
+
+        for hand in self.player_hands:
+            val = hand_value(hand)
+
+            if val > 21:
+                total_win -= self.bet
+            elif dealer_val > 21 or val > dealer_val:
+                total_win += self.bet
+            elif val < dealer_val:
+                total_win -= self.bet
+
+        balances[self.ctx.author.id] += total_win
+
+        result = f"Result: {total_win:+} CP"
+
         self.done = True
         self.clear_items()
 
-        embed = self.get_embed(reveal_dealer=True)
+        embed = self.get_embed(reveal=True)
         embed.set_footer(text=result)
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -97,97 +132,78 @@ class GameView(View):
 
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.done:
-            return
+        hand = self.current_hand()
+        hand.append(draw())
 
-        self.player_hand.append(draw())
-        val = hand_value(self.player_hand)
-
-        if val > 21:
-            await self.end_game(interaction, "💥 Bust! You lose.")
-        elif val == 21:
-            await self.stand(interaction, button)
+        if hand_value(hand) > 21:
+            await self.next_hand(interaction)
         else:
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     @button(label="Stand", style=discord.ButtonStyle.gray)
     async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.done:
-            return
-
-        while hand_value(self.dealer_hand) < 17:
-            self.dealer_hand.append(draw())
-
-        p_val = hand_value(self.player_hand)
-        d_val = hand_value(self.dealer_hand)
-
-        if d_val > 21:
-            result = "🔥 Dealer busts! You win!"
-        elif p_val > d_val:
-            result = "🎉 You win!"
-        elif p_val < d_val:
-            result = "😔 Dealer wins. You lose."
-        else:
-            result = "🤝 Push!"
-
-        await self.end_game(interaction, result)
+        await self.next_hand(interaction)
 
     @button(label="Double", style=discord.ButtonStyle.blurple)
     async def double(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.done or self.double_done or len(self.player_hand) != 2:
+        if len(self.current_hand()) != 2:
             return
 
-        self.double_done = True
-        self.player_hand.append(draw())
+        self.bet *= 2
+        self.current_hand().append(draw())
 
-        val = hand_value(self.player_hand)
+        await self.next_hand(interaction)
 
-        if val > 21:
-            await self.end_game(interaction, "💥 Bust on double! You lose.")
-        else:
-            await self.stand(interaction, button)
+    @button(label="Split", style=discord.ButtonStyle.red)
+    async def split_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        hand = self.current_hand()
+
+        if self.split:
+            return
+
+        if len(hand) != 2:
+            return
+
+        if get_rank(hand[0]) != get_rank(hand[1]):
+            await interaction.response.send_message("Can't split.", ephemeral=True)
+            return
+
+        self.split = True
+
+        h1 = [hand[0], draw()]
+        h2 = [hand[1], draw()]
+
+        self.player_hands = [h1, h2]
+
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
 # ================== COMMANDS ==================
 
 @bot.command()
-async def ping(ctx):
-    await ctx.send("Pong! 🏓")
+async def balance(ctx):
+    if ctx.author.id not in balances:
+        balances[ctx.author.id] = START_CP
+    await ctx.send(f"You have {balances[ctx.author.id]} CP")
 
 @bot.command()
-async def blackjack(ctx):
-    player = [draw(), draw()]
-    dealer = [draw(), draw()]
+async def blackjack(ctx, bet: int):
+    if ctx.author.id not in balances:
+        balances[ctx.author.id] = START_CP
 
-    view = GameView(player, dealer)
-    embed = view.get_embed()
+    if bet <= 0 or bet > balances[ctx.author.id]:
+        await ctx.send("Invalid bet.")
+        return
 
-    if is_blackjack(player) and is_blackjack(dealer):
-        embed.description = "🤝 Push! Both have Blackjack!"
-        view.done = True
-        view.clear_items()
-    elif is_blackjack(dealer):
-        embed.description = "😔 Dealer has Blackjack! You lose."
-        view.done = True
-        view.clear_items()
-    elif is_blackjack(player):
-        embed.description = "🃏 Blackjack! You win instantly!"
-        view.done = True
-        view.clear_items()
+    balances[ctx.author.id] -= bet
 
-    await ctx.send(embed=embed, view=view)
+    view = GameView(ctx, bet)
+    await ctx.send(embed=view.get_embed(), view=view)
 
-# ================== EVENTS ==================
+# ================== RUN ==================
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-
-@bot.event
-async def on_command_error(ctx, error):
-    print(f"ERROR: {error}")
-    await ctx.send(f"Error: {error}")
-
-# ================== RUN ==================
 
 if __name__ == "__main__":
     webserver.keep_alive()

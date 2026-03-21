@@ -1,15 +1,17 @@
 import discord
-import os
 from discord.ext import commands
-from discord.ui import View, button
+import logging
+from dotenv import load_dotenv
+import os
 import random
-
-TOKEN = "YOUR_TOKEN_HERE"  # ← Replace or use env var
-
+import webserver
+load_dotenv()
+token = os.getenv("DISCORD_TOKEN")
+handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
 intents.message_content = True
-
-bot = commands.Bot(command_prefix="$", intents=intents)
+intents.members = True
+bot = commands.Bot(command_prefix='$', intents=intents)
 
 RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
 VALUES = {r: min(10, int(r)) if r.isdigit() else 10 if r in "JQK" else 11 for r in RANKS}

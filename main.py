@@ -1,12 +1,12 @@
 import discord
 from discord.ext import commands
-from discord.ui import View, Button
+from discord.ui import View
 import random
 import json
 import os
 import logging
 import webserver
-from typing import List, Dict
+from typing import Dict
 
 # -------------------------
 # Setup
@@ -82,6 +82,7 @@ class BlackjackView(View):
         self.player = player
         self.dealer = dealer
         self.done = False
+
         ensure_user(str(ctx.author.id))
 
     def update_cp(self, win=False):
@@ -94,41 +95,45 @@ class BlackjackView(View):
             user["losses"] += 1
         save_data()
 
-    async def update(self, interaction):
+    async def update_message(self, interaction):
         embed = discord.Embed(title="🎴 Blackjack", color=discord.Color.dark_green())
 
         embed.add_field(
             name="🧑 You",
-            value=f"`{' '.join(self.player)}`\n**{hand_value(self.player)}**",
+            value=f"`{' '.join(self.player)}`\nTotal: **{hand_value(self.player)}**",
             inline=False
         )
 
         embed.add_field(
             name="🤖 Dealer",
-            value=f"`{' '.join(self.dealer)}`\n**{hand_value(self.dealer)}**",
+            value=f"`{' '.join(self.dealer)}`\nTotal: **{hand_value(self.dealer)}**",
             inline=False
         )
 
         embed.add_field(name="💰 Bet", value=f"{self.bet} CP")
 
-        if interaction.response.is_done():
-            await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None if self.done else self)
-        else:
-            await interaction.response.edit_message(embed=embed, view=None if self.done else self)
+        # 🔥 THIS FIXES BUTTONS
+        await interaction.response.defer()
+
+        await interaction.message.edit(
+            embed=embed,
+            view=None if self.done else self
+        )
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.green)
-    async def hit(self, interaction, _):
+    async def hit(self, interaction: discord.Interaction, _):
         if self.done: return
+
         self.player.append(draw_card())
 
         if hand_value(self.player) > 21:
-            self.done = True
             self.update_cp(False)
+            self.done = True
 
-        await self.update(interaction)
+        await self.update_message(interaction)
 
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.gray)
-    async def stand(self, interaction, _):
+    async def stand(self, interaction: discord.Interaction, _):
         if self.done: return
 
         while hand_value(self.dealer) < 17:
@@ -143,10 +148,10 @@ class BlackjackView(View):
             self.update_cp(False)
 
         self.done = True
-        await self.update(interaction)
+        await self.update_message(interaction)
 
     @discord.ui.button(label="Double", style=discord.ButtonStyle.blurple)
-    async def double(self, interaction, _):
+    async def double(self, interaction: discord.Interaction, _):
         if self.done: return
 
         self.bet *= 2
@@ -154,7 +159,6 @@ class BlackjackView(View):
 
         if hand_value(self.player) > 21:
             self.update_cp(False)
-            self.done = True
         else:
             while hand_value(self.dealer) < 17:
                 self.dealer.append(draw_card())
@@ -164,12 +168,11 @@ class BlackjackView(View):
             else:
                 self.update_cp(False)
 
-            self.done = True
-
-        await self.update(interaction)
+        self.done = True
+        await self.update_message(interaction)
 
 # -------------------------
-# Bet Selection
+# Bet View
 # -------------------------
 class BetView(View):
     def __init__(self, ctx):
@@ -179,60 +182,38 @@ class BetView(View):
     async def interaction_check(self, interaction):
         return interaction.user == self.ctx.author
 
-    async def start(self, interaction, bet):
+    async def start_game(self, interaction, bet):
         player = [draw_card(), draw_card()]
         dealer = [draw_card(), draw_card()]
 
         view = BlackjackView(self.ctx, bet, player, dealer)
 
         embed = discord.Embed(title="🎴 Blackjack", color=discord.Color.dark_green())
-        embed.add_field(name="🧑 You", value=" ".join(player))
-        embed.add_field(name="🤖 Dealer", value=f"{dealer[0]} ❓")
+
+        embed.add_field(name="🧑 You", value=" ".join(player), inline=False)
+        embed.add_field(name="🤖 Dealer", value=f"{dealer[0]} ❓", inline=False)
+        embed.add_field(name="💰 Bet", value=f"{bet} CP", inline=False)
 
         await interaction.response.edit_message(embed=embed, view=view)
 
-    @discord.ui.button(label="10", style=discord.ButtonStyle.gray)
-    async def b10(self, interaction, _):
-        await self.start(interaction, 10)
+    @discord.ui.button(label="10 CP", style=discord.ButtonStyle.gray)
+    async def bet10(self, interaction, _):
+        await self.start_game(interaction, 10)
 
-    @discord.ui.button(label="50", style=discord.ButtonStyle.gray)
-    async def b50(self, interaction, _):
-        await self.start(interaction, 50)
+    @discord.ui.button(label="50 CP", style=discord.ButtonStyle.gray)
+    async def bet50(self, interaction, _):
+        await self.start_game(interaction, 50)
 
-    @discord.ui.button(label="100", style=discord.ButtonStyle.green)
-    async def b100(self, interaction, _):
-        await self.start(interaction, 100)
-
-# -------------------------
-# Multiplayer Lobby
-# -------------------------
-class Lobby(View):
-    def __init__(self, host):
-        super().__init__(timeout=30)
-        self.players = [host]
-
-    @discord.ui.button(label="Join", style=discord.ButtonStyle.green)
-    async def join(self, interaction, _):
-        if interaction.user not in self.players:
-            self.players.append(interaction.user)
-        await interaction.response.send_message("Joined!", ephemeral=True)
-
-    @discord.ui.button(label="Start", style=discord.ButtonStyle.blurple)
-    async def start(self, interaction, _):
-        await interaction.response.send_message(
-            f"Starting with {len(self.players)} players!"
-        )
+    @discord.ui.button(label="100 CP", style=discord.ButtonStyle.green)
+    async def bet100(self, interaction, _):
+        await self.start_game(interaction, 100)
 
 # -------------------------
 # Commands
 # -------------------------
 @bot.command()
 async def blackjack(ctx):
-    await ctx.send("💰 Choose bet:", view=BetView(ctx))
-
-@bot.command()
-async def bjmulti(ctx):
-    await ctx.send("👥 Multiplayer Lobby", view=Lobby(ctx.author))
+    await ctx.send("💰 Choose your bet:", view=BetView(ctx))
 
 @bot.command()
 async def stats(ctx):
@@ -247,7 +228,7 @@ async def stats(ctx):
     await ctx.send(embed=embed)
 
 # -------------------------
-# Events
+# Ready
 # -------------------------
 @bot.event
 async def on_ready():

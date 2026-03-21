@@ -5,9 +5,8 @@ import random
 import json
 import os
 import logging
-import asyncio
 
-# If you're using a webserver for keeping alive (Replit/etc)
+# If you're using a keep-alive webserver (Replit, Render, etc.)
 # import webserver
 
 logging.basicConfig(level=logging.INFO)
@@ -22,98 +21,93 @@ bot = commands.Bot(command_prefix="$", intents=intents)
 
 CP_FILE = "cp_data.json"
 
-# -------------------------
-# Data Management
-# -------------------------
-CP_DATA = {}
+# ─── Data ────────────────────────────────────────────
+CP_DATA: dict = {}
 
 if os.path.exists(CP_FILE):
     try:
-        with open(CP_FILE, "r") as f:
-            CP_DATA = json.load(f)
-    except Exception as e:
-        print("Failed to load cp_data.json:", e)
+        with open(CP_FILE, encoding="utf-8") as file:
+            CP_DATA = json.load(file)
+    except json.JSONDecodeError as exc:
+        print(f"Invalid JSON in {CP_FILE}: {exc}")
+    except OSError as exc:
+        print(f"Failed to read {CP_FILE}: {exc}")
 
-def save_data():
+def save_data() -> None:
     try:
-        with open(CP_FILE, "w") as f:
-            json.dump(CP_DATA, f, indent=4)
-    except Exception as e:
-        print("Failed to save cp_data:", e)
+        with open(CP_FILE, "w", encoding="utf-8") as file:
+            json.dump(CP_DATA, file, indent=4)
+    except OSError as exc:
+        print(f"Failed to save {CP_FILE}: {exc}")
 
-def ensure_user(user_id: str):
+def ensure_user(user_id: str) -> dict:
     if user_id not in CP_DATA:
         CP_DATA[user_id] = {"cp": 1000, "wins": 0, "losses": 0, "pushes": 0}
     return CP_DATA[user_id]
 
-# -------------------------
-# Cards & Logic
-# -------------------------
+# ─── Cards ───────────────────────────────────────────
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
-VALUES = {"2":2, "3":3, "4":4, "5":5, "6":6, "7":7, "8":8, "9":9,
-          "10":10, "J":10, "Q":10, "K":10, "A":11}
+VALUES = {r: min(10, i) if i <= 10 else 10 if r in "JQK" else 11
+          for i, r in enumerate(RANKS, 2)}
 
-def draw_card():
+def draw_card() -> str:
     return random.choice(RANKS) + random.choice(SUITS)
 
-def hand_value(hand):
-    total = 0
-    aces = 0
-    for card in hand:
-        rank = card[:-1]
-        total += VALUES[rank]
-        if rank == "A":
-            aces += 1
+def hand_value(hand: list[str]) -> int:
+    total = sum(VALUES[card[:-1]] for card in hand)
+    aces = sum(1 for card in hand if card.startswith("A"))
     while total > 21 and aces:
         total -= 10
         aces -= 1
     return total
 
-# -------------------------
-# Blackjack Game View
-# -------------------------
+# ─── Game View ───────────────────────────────────────
 class BlackjackView(View):
-    def __init__(self, interaction: discord.Interaction, bet: int, player_hand, dealer_hand):
+    def __init__(self, interaction: discord.Interaction, bet: int,
+                 player_hand: list[str], dealer_hand: list[str]):
         super().__init__(timeout=180)
         self.interaction = interaction
         self.bet = bet
         self.player_hand = player_hand
         self.dealer_hand = dealer_hand
-        self.original_author = interaction.user
+        self.original_user = interaction.user
         self.finished = False
+        self.result: str = ""   # initialized here
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user == self.original_author
+        return interaction.user == self.original_user
 
-    def get_embed(self, reveal_dealer=False):
-        embed = discord.Embed(title="🎴 Blackjack", color=0x006400)
+    def get_embed(self, reveal_dealer: bool = False) -> discord.Embed:
+        embed = discord.Embed(title="🎴 Blackjack", colour=0x006400)
 
-        player_total = hand_value(self.player_hand)
-        dealer_total = hand_value(self.dealer_hand) if reveal_dealer else "?"
+        p_total = hand_value(self.player_hand)
+        d_total = hand_value(self.dealer_hand) if reveal_dealer else "?"
 
         embed.add_field(
             name="🧑 You",
-            value=f"{'  '.join(self.player_hand)}\n**Total: {player_total}**",
+            value=f"{'  '.join(self.player_hand)}\n**Total: {p_total}**",
             inline=False
         )
         embed.add_field(
             name="🤖 Dealer",
-            value=f"{'  '.join(self.dealer_hand) if reveal_dealer else self.dealer_hand[0] + '  ❓'}\n**Total: {dealer_total}**",
+            value=f"{'  '.join(self.dealer_hand) if reveal_dealer else self.dealer_hand[0] + '  ❓'}\n**Total: {d_total}**",
             inline=False
         )
         embed.add_field(name="💰 Bet", value=f"{self.bet} CP", inline=True)
 
         if self.finished:
-            embed.color = 0xFFD700 if "win" in self.result.lower() else 0x8B0000
+            colour = 0xFFD700 if "win" in self.result.lower() else 0x8B0000
+            embed.colour = colour
             embed.set_footer(text=self.result)
 
         return embed
 
-    async def end_game(self, result: str, win: bool = None):
+    async def end_game(self, result: str, win: bool | None = None) -> None:
         self.finished = True
         self.result = result
-        user = ensure_user(str(self.original_author.id))
+
+        user = ensure_user(str(self.original_user.id))
 
         if win is True:
             user["cp"] += self.bet
@@ -127,88 +121,89 @@ class BlackjackView(View):
         save_data()
 
         try:
-            await self.interaction.message.edit(embed=self.get_embed(reveal_dealer=True), view=None)
-        except:
+            await self.interaction.message.edit(
+                embed=self.get_embed(reveal_dealer=True),
+                view=None
+            )
+        except discord.HTTPException:
             pass
 
-    async def update(self, interaction: discord.Interaction, reveal_dealer=False):
+    async def update(self, interaction: discord.Interaction) -> None:
         if self.finished:
             return
         try:
             await interaction.response.defer()
-            await interaction.message.edit(embed=self.get_embed(reveal_dealer), view=self)
+            await interaction.message.edit(embed=self.get_embed(), view=self)
         except discord.HTTPException:
             pass
 
-    # ─── Buttons ────────────────────────────────────────
+    # ─── Buttons ─────────────────────────────────────
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.green)
-    async def hit(self, interaction: discord.Interaction, button: Button):
-        if self.finished: return
+    async def hit(self, interaction: discord.Interaction, _button: Button) -> None:
+        if self.finished:
+            return
 
         self.player_hand.append(draw_card())
-        player_val = hand_value(self.player_hand)
-
-        if player_val > 21:
+        if hand_value(self.player_hand) > 21:
             await self.end_game("Bust! You lose.", win=False)
         else:
             await self.update(interaction)
 
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.gray)
-    async def stand(self, interaction: discord.Interaction, button: Button):
-        if self.finished: return
+    async def stand(self, interaction: discord.Interaction, _button: Button) -> None:
+        if self.finished:
+            return
 
-        # Dealer plays
         while hand_value(self.dealer_hand) < 17:
             self.dealer_hand.append(draw_card())
 
-        player_val = hand_value(self.player_hand)
-        dealer_val = hand_value(self.dealer_hand)
+        p = hand_value(self.player_hand)
+        d = hand_value(self.dealer_hand)
 
-        if dealer_val > 21:
+        if d > 21:
             await self.end_game("Dealer busts! You win!", win=True)
-        elif player_val > dealer_val:
+        elif p > d:
             await self.end_game("You win!", win=True)
-        elif player_val < dealer_val:
+        elif p < d:
             await self.end_game("Dealer wins.", win=False)
         else:
             await self.end_game("Push!", win=None)
 
     @discord.ui.button(label="Double", style=discord.ButtonStyle.blurple)
-    async def double(self, interaction: discord.Interaction, button: Button):
-        if self.finished: return
+    async def double(self, interaction: discord.Interaction, _button: Button) -> None:
+        if self.finished:
+            return
 
-        user = ensure_user(str(self.original_author.id))
-        if user["cp"] < self.bet:
+        user = ensure_user(str(self.original_user.id))
+        additional = self.bet
+        if user["cp"] < additional:
             await interaction.response.send_message("Not enough CP to double!", ephemeral=True)
             return
 
-        self.bet *= 2
-        user["cp"] -= self.bet // 2   # subtract the additional amount
+        self.bet += additional
+        user["cp"] -= additional
         save_data()
 
         self.player_hand.append(draw_card())
-        player_val = hand_value(self.player_hand)
+        p_val = hand_value(self.player_hand)
 
-        if player_val > 21:
+        if p_val > 21:
             await self.end_game("Bust on double! You lose.", win=False)
             return
 
-        # Dealer plays
         while hand_value(self.dealer_hand) < 17:
             self.dealer_hand.append(draw_card())
 
-        dealer_val = hand_value(self.dealer_hand)
+        d_val = hand_value(self.dealer_hand)
 
-        if dealer_val > 21 or player_val > dealer_val:
+        if d_val > 21 or p_val > d_val:
             await self.end_game("Double down win!", win=True)
-        elif player_val < dealer_val:
+        elif p_val < d_val:
             await self.end_game("Double down - dealer wins.", win=False)
         else:
             await self.end_game("Push on double!", win=None)
 
-# -------------------------
-# Bet Selection View
-# -------------------------
+# ─── Bet Selection ───────────────────────────────────
 class BetView(View):
     def __init__(self, interaction: discord.Interaction):
         super().__init__(timeout=60)
@@ -217,7 +212,8 @@ class BetView(View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user == self.original_user
 
-    async def start_blackjack(self, interaction: discord.Interaction, bet_amount: int):
+    @staticmethod
+    async def start_blackjack(interaction: discord.Interaction, bet_amount: int) -> None:
         user = ensure_user(str(interaction.user.id))
         if user["cp"] < bet_amount:
             await interaction.response.send_message("Not enough CP!", ephemeral=True)
@@ -230,49 +226,49 @@ class BetView(View):
         dealer = [draw_card(), draw_card()]
 
         view = BlackjackView(interaction, bet_amount, player, dealer)
-
         embed = view.get_embed(reveal_dealer=False)
+
         await interaction.response.edit_message(embed=embed, view=view)
 
     @discord.ui.button(label="10 CP", style=discord.ButtonStyle.gray)
-    async def bet10(self, interaction: discord.Interaction, _):
+    async def bet10(self, interaction: discord.Interaction, _button: Button) -> None:
         await self.start_blackjack(interaction, 10)
 
     @discord.ui.button(label="50 CP", style=discord.ButtonStyle.gray)
-    async def bet50(self, interaction: discord.Interaction, _):
+    async def bet50(self, interaction: discord.Interaction, _button: Button) -> None:
         await self.start_blackjack(interaction, 50)
 
     @discord.ui.button(label="100 CP", style=discord.ButtonStyle.green)
-    async def bet100(self, interaction: discord.Interaction, _):
+    async def bet100(self, interaction: discord.Interaction, _button: Button) -> None:
         await self.start_blackjack(interaction, 100)
 
-# -------------------------
-# Commands
-# -------------------------
+# ─── Commands ────────────────────────────────────────
 @bot.command()
-async def blackjack(ctx):
-    embed = discord.Embed(title="Blackjack", description="Choose your bet:", color=0x006400)
-    view = BetView(ctx.interaction if hasattr(ctx, 'interaction') else None)
+async def blackjack(ctx: commands.Context) -> None:
+    embed = discord.Embed(
+        title="Blackjack",
+        description="Choose your bet:",
+        colour=0x006400
+    )
+    view = BetView(ctx.interaction if hasattr(ctx, "interaction") else None)  # safe fallback
     await ctx.send(embed=embed, view=view)
 
 @bot.command()
-async def stats(ctx):
+async def stats(ctx: commands.Context) -> None:
     user = ensure_user(str(ctx.author.id))
-    embed = discord.Embed(title=f"Stats — {ctx.author}", color=0x00AA00)
-    embed.add_field(name="CP", value=user["cp"], inline=True)
-    embed.add_field(name="Wins", value=user["wins"], inline=True)
+    embed = discord.Embed(title=f"Stats — {ctx.author}", colour=0x00AA00)
+    embed.add_field(name="CP",     value=user["cp"],     inline=True)
+    embed.add_field(name="Wins",   value=user["wins"],   inline=True)
     embed.add_field(name="Losses", value=user["losses"], inline=True)
     embed.add_field(name="Pushes", value=user.get("pushes", 0), inline=True)
     await ctx.send(embed=embed)
 
 @bot.event
-async def on_ready():
+async def on_ready() -> None:
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Blackjack bot is ready!")
 
-# -------------------------
-# Start
-# -------------------------
+# ─── Start ───────────────────────────────────────────
 if __name__ == "__main__":
-    # webserver.keep_alive()   # uncomment if needed (Replit, etc)
+    # webserver.keep_alive()   # uncomment if needed
     bot.run(token)

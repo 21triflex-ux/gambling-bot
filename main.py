@@ -15,11 +15,22 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='$', intents=intents)
 
 # ================== DATA ==================
-balances = {}
+stats = {}
 active_games = {}
 
 START_CP = 1000
 
+def get_user(user_id):
+    if user_id not in stats:
+        stats[user_id] = {
+            "cp": START_CP,
+            "wins": 0,
+            "losses": 0,
+            "earned": 0
+        }
+    return stats[user_id]
+
+# ================== CARDS ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
 
@@ -62,7 +73,7 @@ class GameView(View):
         self.dealer = [draw(), draw()]
         self.done = False
         self.split = False
-        self.first_move_done = False  # 🔥 used for raise lock
+        self.first_move_done = False
 
     def current_hand(self):
         return self.player_hands[self.current]
@@ -87,7 +98,9 @@ class GameView(View):
             inline=False
         )
 
-        embed.set_footer(text=f"Bet: {self.bet} CP | Balance: {balances[self.ctx.author.id]}")
+        user = get_user(self.ctx.author.id)
+        embed.set_footer(text=f"Bet: {self.bet} CP | Balance: {user['cp']}")
+
         return embed
 
     async def next_hand(self, interaction):
@@ -101,7 +114,9 @@ class GameView(View):
         while hand_value(self.dealer) < 17:
             self.dealer.append(draw())
 
+        user = get_user(self.ctx.author.id)
         dealer_val = hand_value(self.dealer)
+
         total_win = 0
 
         for hand in self.player_hands:
@@ -109,12 +124,20 @@ class GameView(View):
 
             if val > 21:
                 total_win -= self.bet
+                user["losses"] += 1
+
             elif dealer_val > 21 or val > dealer_val:
                 total_win += self.bet
+                user["wins"] += 1
+
             elif val < dealer_val:
                 total_win -= self.bet
+                user["losses"] += 1
 
-        balances[self.ctx.author.id] += total_win
+        if total_win > 0:
+            user["earned"] += total_win
+
+        user["cp"] += total_win
 
         self.done = True
         self.clear_items()
@@ -128,13 +151,12 @@ class GameView(View):
 
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.first_move_done = True  # 🔥 lock raise
+        self.first_move_done = True
 
         hand = self.current_hand()
         hand.append(draw())
 
         if hand_value(hand) > 21:
-            # 💥 FIX: immediately move to next hand
             await self.next_hand(interaction)
         else:
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
@@ -167,7 +189,7 @@ class GameView(View):
             return
 
         self.split = True
-        self.first_move_done = True  # 🔥 lock raise after split
+        self.first_move_done = True
 
         h1 = [hand[0], draw()]
         h2 = [hand[1], draw()]
@@ -179,25 +201,24 @@ class GameView(View):
 
 @bot.command()
 async def balance(ctx):
-    balances.setdefault(ctx.author.id, START_CP)
-    await ctx.send(f"You have {balances[ctx.author.id]} CP")
+    user = get_user(ctx.author.id)
+    await ctx.send(f"You have {user['cp']} CP")
 
 @bot.command()
 async def blackjack(ctx, bet: int):
-    balances.setdefault(ctx.author.id, START_CP)
+    user = get_user(ctx.author.id)
 
-    if bet <= 0 or bet > balances[ctx.author.id]:
+    if bet <= 0 or bet > user["cp"]:
         await ctx.send("Invalid bet.")
         return
 
-    balances[ctx.author.id] -= bet
+    user["cp"] -= bet
 
     view = GameView(ctx, bet)
     active_games[ctx.author.id] = view
 
     await ctx.send(embed=view.get_embed(), view=view)
 
-# 🔥 NEW COMMAND
 @bot.command()
 async def raisebet(ctx, amount: int):
     if ctx.author.id not in active_games:
@@ -205,19 +226,52 @@ async def raisebet(ctx, amount: int):
         return
 
     game = active_games[ctx.author.id]
+    user = get_user(ctx.author.id)
 
     if game.first_move_done:
         await ctx.send("You can only raise before your first move.")
         return
 
-    if amount <= 0 or amount > balances[ctx.author.id]:
+    if amount <= 0 or amount > user["cp"]:
         await ctx.send("Invalid raise.")
         return
 
-    balances[ctx.author.id] -= amount
+    user["cp"] -= amount
     game.bet += amount
 
     await ctx.send(f"Raised bet by {amount} CP. New bet: {game.bet} CP")
+
+# 🏆 LEADERBOARD
+@bot.command()
+async def leaderboard(ctx):
+    if not stats:
+        await ctx.send("No data yet.")
+        return
+
+    sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)
+
+    embed = discord.Embed(title="🏆 Leaderboard", color=0xFFD700)
+
+    for i, (user_id, data) in enumerate(sorted_users[:10], start=1):
+        wins = data["wins"]
+        losses = data["losses"]
+        total = wins + losses
+        winrate = (wins / total * 100) if total > 0 else 0
+
+        user_obj = await bot.fetch_user(user_id)
+
+        embed.add_field(
+            name=f"#{i} {user_obj.name}",
+            value=(
+                f"💰 CP: {data['cp']}\n"
+                f"🏆 Wins: {wins} | 💀 Losses: {losses}\n"
+                f"📈 Earned: {data['earned']}\n"
+                f"📊 Win%: {winrate:.1f}%"
+            ),
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
 
 # ================== RUN ==================
 

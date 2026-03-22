@@ -58,9 +58,11 @@ class GameView(View):
         super().__init__(timeout=120)
         self.ctx = ctx
         self.player_id = ctx.author.id
-        self.bet = bet
         self.original_bet = bet
+
         self.player_hands = [[draw(), draw()]]
+        self.doubled_hands = [False]
+
         self.dealer = [draw(), draw()]
         self.current = 0
         self.done = False
@@ -80,8 +82,9 @@ class GameView(View):
 
         for i, hand in enumerate(self.player_hands):
             marker = "👉 " if i == self.current and not self.done else ""
+            bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
             embed.add_field(
-                name=f"{marker}Hand {i+1}",
+                name=f"{marker}Hand {i+1} (Bet: {bet})",
                 value=f"{' '.join(hand)} ({hand_value(hand)})",
                 inline=False
             )
@@ -91,7 +94,7 @@ class GameView(View):
         embed.add_field(name="Dealer", value=f"{dealer_cards} ({dealer_val})", inline=False)
 
         user = get_user(self.ctx.author.id)
-        embed.set_footer(text=f"Bet: {self.bet} CP | Balance: {user['cp']}")
+        embed.set_footer(text=f"Balance: {user['cp']}")
         return embed
 
     async def next_hand(self, interaction):
@@ -109,28 +112,29 @@ class GameView(View):
         dealer_val = hand_value(self.dealer)
         net = 0
 
-        for hand in self.player_hands:
+        for i, hand in enumerate(self.player_hands):
             val = hand_value(hand)
+            bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
 
-            # Blackjack payout
+            # Blackjack
             if is_blackjack(hand) and not is_blackjack(self.dealer):
-                payout = int(self.original_bet * 1.5)
+                payout = int(bet * 1.5)
                 net += payout
                 user["wins"] += 1
                 user["earned"] += payout
                 continue
 
             if val > 21:
-                net -= self.original_bet
+                net -= bet
                 user["losses"] += 1
 
             elif dealer_val > 21 or val > dealer_val:
-                net += self.original_bet
+                net += bet
                 user["wins"] += 1
-                user["earned"] += self.original_bet
+                user["earned"] += bet
 
             elif val < dealer_val:
-                net -= self.original_bet
+                net -= bet
                 user["losses"] += 1
 
         user["cp"] += net
@@ -158,8 +162,10 @@ class GameView(View):
     async def double(self, interaction, _):
         if len(self.current_hand()) != 2:
             return
-        self.bet *= 2
+
         self.current_hand().append(draw())
+        self.doubled_hands[self.current] = True
+
         await self.next_hand(interaction)
 
     @button(label="Split", style=discord.ButtonStyle.red)
@@ -167,6 +173,7 @@ class GameView(View):
         hand = self.current_hand()
         if self.split_used or len(hand) != 2:
             return
+
         if get_rank(hand[0]) != get_rank(hand[1]):
             await interaction.response.send_message("Can't split.", ephemeral=True)
             return
@@ -176,6 +183,7 @@ class GameView(View):
             [hand[0], draw()],
             [hand[1], draw()]
         ]
+        self.doubled_hands = [False, False]
 
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
@@ -232,7 +240,6 @@ async def slots(ctx, bet: int):
 
     symbols = ["🍒","🍋","🍊","⭐","💎"]
     roll = [random.choice(symbols) for _ in range(3)]
-    result = " ".join(roll)
 
     if len(set(roll)) == 1:
         payout = bet * 3
@@ -242,7 +249,7 @@ async def slots(ctx, bet: int):
         payout = -bet
 
     user["cp"] += payout
-    await ctx.send(f"🎰 {result}\nResult: {payout:+} CP")
+    await ctx.send(f"🎰 {' '.join(roll)}\nResult: {payout:+} CP")
 
 @bot.command()
 async def send(ctx, member: discord.Member, amount: int):

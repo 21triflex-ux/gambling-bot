@@ -269,22 +269,28 @@ async def send(ctx, member: discord.Member, amount: int):
 
     await ctx.send(f"💸 Sent {amount} CP to {member.mention}")
 
+# ================== UPDATED LEADERBOARD ==================
 @bot.command()
 async def leaderboard(ctx):
-    sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)
+    if not stats:
+        await ctx.send("No data yet.")
+        return
 
+    sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)
     embed = discord.Embed(title="🏆 Leaderboard", color=0xFFD700)
 
     for i, (user_id, data) in enumerate(sorted_users[:10], start=1):
         user_obj = await bot.fetch_user(user_id)
         wins = data["wins"]
         losses = data["losses"]
+        earned = data["earned"]
+        cp = data["cp"]
         total = wins + losses
         winrate = (wins / total * 100) if total > 0 else 0
 
         embed.add_field(
             name=f"#{i} {user_obj.name}",
-            value=f"💰 {data['cp']} CP | 📊 {winrate:.1f}%",
+            value=f"💰 CP: {cp}\n🏆 Wins: {wins}\n❌ Losses: {losses}\n💸 Total Earned: {earned}\n📊 Win %: {winrate:.1f}%",
             inline=False
         )
 

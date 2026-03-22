@@ -58,7 +58,7 @@ class GameView(View):
         self.ctx = ctx
         self.player_id = ctx.author.id
         self.bet = bet
-        self.original_bet = bet  # store for losses
+        self.original_bet = bet
         self.player_hands = [[draw(), draw()]]
         self.current = 0
         self.dealer = [draw(), draw()]
@@ -107,7 +107,7 @@ class GameView(View):
 
         user = get_user(self.ctx.author.id)
         dealer_val = hand_value(self.dealer)
-        net_change = 0  # net CP gained/lost
+        net_change = 0  # do not touch CP until here
 
         for hand in self.player_hands:
             val = hand_value(hand)
@@ -183,7 +183,6 @@ async def blackjack(ctx, bet: int):
     if bet <= 0 or bet > user["cp"]:
         await ctx.send("Invalid bet.")
         return
-    user["cp"] -= bet
     view = GameView(ctx, bet)
     active_games[ctx.author.id] = view
     await ctx.send(embed=view.get_embed(), view=view)
@@ -201,7 +200,6 @@ async def raisebet(ctx, amount: int):
     if amount <= 0 or amount > user["cp"]:
         await ctx.send("Invalid raise.")
         return
-    user["cp"] -= amount
     game.bet += amount
     await ctx.send(f"Raised bet by {amount} CP. New bet: {game.bet} CP")
 

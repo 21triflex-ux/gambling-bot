@@ -16,7 +16,6 @@ bot = commands.Bot(command_prefix='$', intents=intents)
 
 # ================== DATA ==================
 stats = {}
-active_games = {}
 START_CP = 1000
 
 def get_user(user_id):
@@ -26,32 +25,30 @@ def get_user(user_id):
 
 # ================== CARDS ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
-RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
 
 def draw():
     return random.choice(RANKS) + random.choice(SUITS)
 
 def get_rank(card):
-    return ''.join(ch for ch in card if ch.isalnum())
+    return ''.join(c for c in card if c.isalnum())
 
 def hand_value(hand):
-    total = 0
-    aces = 0
+    total, aces = 0, 0
     for c in hand:
-        rank = get_rank(c)
-        if rank == "A":
+        r = get_rank(c)
+        if r == "A":
             total += 11
             aces += 1
-        elif rank in ["K", "Q", "J"]:
+        elif r in ["K","Q","J"]:
             total += 10
         else:
-            total += int(rank)
+            total += int(r)
     while total > 21 and aces:
         total -= 10
         aces -= 1
     return total
 
-# ✅ BLACKJACK CHECK
 def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
 
@@ -64,11 +61,12 @@ class GameView(View):
         self.bet = bet
         self.original_bet = bet
         self.player_hands = [[draw(), draw()]]
-        self.current = 0
         self.dealer = [draw(), draw()]
+        self.current = 0
         self.done = False
+        self.split_used = False
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+    async def interaction_check(self, interaction):
         if interaction.user.id != self.player_id:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
             return False
@@ -79,6 +77,7 @@ class GameView(View):
 
     def get_embed(self, reveal=False):
         embed = discord.Embed(title="🎴 Blackjack", color=0x006400)
+
         for i, hand in enumerate(self.player_hands):
             marker = "👉 " if i == self.current and not self.done else ""
             embed.add_field(
@@ -86,6 +85,7 @@ class GameView(View):
                 value=f"{' '.join(hand)} ({hand_value(hand)})",
                 inline=False
             )
+
         dealer_cards = ' '.join(self.dealer) if reveal else self.dealer[0] + " ❓"
         dealer_val = hand_value(self.dealer) if reveal else "?"
         embed.add_field(name="Dealer", value=f"{dealer_cards} ({dealer_val})", inline=False)
@@ -93,6 +93,13 @@ class GameView(View):
         user = get_user(self.ctx.author.id)
         embed.set_footer(text=f"Bet: {self.bet} CP | Balance: {user['cp']}")
         return embed
+
+    async def next_hand(self, interaction):
+        if self.current < len(self.player_hands) - 1:
+            self.current += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await self.finish(interaction)
 
     async def finish(self, interaction):
         while hand_value(self.dealer) < 17:
@@ -105,7 +112,6 @@ class GameView(View):
         for hand in self.player_hands:
             val = hand_value(hand)
 
-            # 🔥 BLACKJACK PAYS 3:2
             if is_blackjack(hand) and not is_blackjack(self.dealer):
                 payout = int(self.original_bet * 1.5)
                 net += payout
@@ -126,9 +132,6 @@ class GameView(View):
                 net -= self.original_bet
                 user["losses"] += 1
 
-            else:
-                pass  # push
-
         user["cp"] += net
         self.done = True
         self.clear_items()
@@ -137,92 +140,82 @@ class GameView(View):
         embed.set_footer(text=f"Result: {net:+} CP | Balance: {user['cp']}")
         await interaction.response.edit_message(embed=embed, view=self)
 
+    # ===== BUTTONS =====
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction, _):
         self.current_hand().append(draw())
         if hand_value(self.current_hand()) > 21:
-            await self.finish(interaction)
+            await self.next_hand(interaction)
         else:
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     @button(label="Stand", style=discord.ButtonStyle.gray)
     async def stand(self, interaction, _):
-        await self.finish(interaction)
+        await self.next_hand(interaction)
+
+    @button(label="Double", style=discord.ButtonStyle.blurple)
+    async def double(self, interaction, _):
+        if len(self.current_hand()) != 2:
+            return
+        self.current_hand().append(draw())
+        self.bet *= 2
+        await self.next_hand(interaction)
+
+    @button(label="Split", style=discord.ButtonStyle.red)
+    async def split(self, interaction, _):
+        hand = self.current_hand()
+        if self.split_used or len(hand) != 2:
+            return
+        if get_rank(hand[0]) != get_rank(hand[1]):
+            await interaction.response.send_message("Can't split.", ephemeral=True)
+            return
+
+        self.split_used = True
+        self.player_hands = [
+            [hand[0], draw()],
+            [hand[1], draw()]
+        ]
+
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
 # ================== COMMANDS ==================
 @bot.command()
-async def balance(ctx):
-    user = get_user(ctx.author.id)
-    await ctx.send(f"💰 You have {user['cp']} CP")
-
-@bot.command()
 async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
+
     if bet <= 0 or bet > user["cp"]:
         await ctx.send("Invalid bet.")
         return
 
     view = GameView(ctx, bet)
-    active_games[ctx.author.id] = view
+
+    # 🔥 INSTANT BLACKJACK CHECKS
+    player_bj = is_blackjack(view.player_hands[0])
+    dealer_bj = is_blackjack(view.dealer)
+
+    if player_bj and dealer_bj:
+        await ctx.send(embed=view.get_embed(reveal=True))
+        return
+
+    elif dealer_bj:
+        user["cp"] -= bet
+        user["losses"] += 1
+        embed = view.get_embed(reveal=True)
+        embed.set_footer(text=f"Dealer Blackjack! -{bet} CP")
+        await ctx.send(embed=embed)
+        return
+
+    elif player_bj:
+        payout = int(bet * 1.5)
+        user["cp"] += payout
+        user["wins"] += 1
+        user["earned"] += payout
+        embed = view.get_embed(reveal=True)
+        embed.set_footer(text=f"Blackjack! +{payout} CP")
+        await ctx.send(embed=embed)
+        return
+
     await ctx.send(embed=view.get_embed(), view=view)
-
-# 🎰 SLOTS
-@bot.command()
-async def slots(ctx, bet: int):
-    user = get_user(ctx.author.id)
-
-    if bet <= 0 or bet > user["cp"]:
-        await ctx.send("Invalid bet.")
-        return
-
-    symbols = ["🍒", "🍋", "🍊", "⭐", "💎"]
-    roll = [random.choice(symbols) for _ in range(3)]
-    result = " ".join(roll)
-
-    if len(set(roll)) == 1:
-        payout = bet * 3
-    elif len(set(roll)) == 2:
-        payout = bet * 2
-    else:
-        payout = -bet
-
-    user["cp"] += payout
-    await ctx.send(f"🎰 {result}\nResult: {payout:+} CP")
-
-# 💸 SEND
-@bot.command()
-async def send(ctx, member: discord.Member, amount: int):
-    sender = get_user(ctx.author.id)
-    receiver = get_user(member.id)
-
-    if member.id == ctx.author.id:
-        await ctx.send("You can't send to yourself.")
-        return
-
-    if amount <= 0 or amount > sender["cp"]:
-        await ctx.send("Invalid amount.")
-        return
-
-    sender["cp"] -= amount
-    receiver["cp"] += amount
-
-    await ctx.send(f"💸 Sent {amount} CP to {member.mention}")
-
-# 🏆 LEADERBOARD
-@bot.command()
-async def leaderboard(ctx):
-    sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)
-    embed = discord.Embed(title="🏆 Leaderboard", color=0xFFD700)
-
-    for i, (user_id, data) in enumerate(sorted_users[:10], start=1):
-        user_obj = await bot.fetch_user(user_id)
-        embed.add_field(
-            name=f"#{i} {user_obj.name}",
-            value=f"💰 {data['cp']} CP",
-            inline=False
-        )
-
-    await ctx.send(embed=embed)
 
 # ================== RUN ==================
 @bot.event

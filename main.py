@@ -180,28 +180,12 @@ async def balance(ctx):
 @bot.command()
 async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
-    if bet <= 0 or bet > user["cp"]:
+    if bet <= 0:
         await ctx.send("Invalid bet.")
         return
     view = GameView(ctx, bet)
     active_games[ctx.author.id] = view
     await ctx.send(embed=view.get_embed(), view=view)
-
-@bot.command()
-async def raisebet(ctx, amount: int):
-    if ctx.author.id not in active_games:
-        await ctx.send("No active game.")
-        return
-    game = active_games[ctx.author.id]
-    user = get_user(ctx.author.id)
-    if game.first_move_done:
-        await ctx.send("You can only raise before your first move.")
-        return
-    if amount <= 0 or amount > user["cp"]:
-        await ctx.send("Invalid raise.")
-        return
-    game.bet += amount
-    await ctx.send(f"Raised bet by {amount} CP. New bet: {game.bet} CP")
 
 @bot.command()
 async def leaderboard(ctx):

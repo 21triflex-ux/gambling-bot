@@ -112,6 +112,7 @@ class GameView(View):
         for hand in self.player_hands:
             val = hand_value(hand)
 
+            # Blackjack payout
             if is_blackjack(hand) and not is_blackjack(self.dealer):
                 payout = int(self.original_bet * 1.5)
                 net += payout
@@ -157,8 +158,8 @@ class GameView(View):
     async def double(self, interaction, _):
         if len(self.current_hand()) != 2:
             return
-        self.current_hand().append(draw())
         self.bet *= 2
+        self.current_hand().append(draw())
         await self.next_hand(interaction)
 
     @button(label="Split", style=discord.ButtonStyle.red)
@@ -180,6 +181,11 @@ class GameView(View):
 
 # ================== COMMANDS ==================
 @bot.command()
+async def balance(ctx):
+    user = get_user(ctx.author.id)
+    await ctx.send(f"💰 You have {user['cp']} CP")
+
+@bot.command()
 async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
 
@@ -189,7 +195,6 @@ async def blackjack(ctx, bet: int):
 
     view = GameView(ctx, bet)
 
-    # 🔥 INSTANT BLACKJACK CHECKS
     player_bj = is_blackjack(view.player_hands[0])
     dealer_bj = is_blackjack(view.dealer)
 
@@ -216,6 +221,67 @@ async def blackjack(ctx, bet: int):
         return
 
     await ctx.send(embed=view.get_embed(), view=view)
+
+@bot.command()
+async def slots(ctx, bet: int):
+    user = get_user(ctx.author.id)
+
+    if bet <= 0 or bet > user["cp"]:
+        await ctx.send("Invalid bet.")
+        return
+
+    symbols = ["🍒","🍋","🍊","⭐","💎"]
+    roll = [random.choice(symbols) for _ in range(3)]
+    result = " ".join(roll)
+
+    if len(set(roll)) == 1:
+        payout = bet * 3
+    elif len(set(roll)) == 2:
+        payout = bet * 2
+    else:
+        payout = -bet
+
+    user["cp"] += payout
+    await ctx.send(f"🎰 {result}\nResult: {payout:+} CP")
+
+@bot.command()
+async def send(ctx, member: discord.Member, amount: int):
+    sender = get_user(ctx.author.id)
+    receiver = get_user(member.id)
+
+    if member.id == ctx.author.id:
+        await ctx.send("You can't send to yourself.")
+        return
+
+    if amount <= 0 or amount > sender["cp"]:
+        await ctx.send("Invalid amount.")
+        return
+
+    sender["cp"] -= amount
+    receiver["cp"] += amount
+
+    await ctx.send(f"💸 Sent {amount} CP to {member.mention}")
+
+@bot.command()
+async def leaderboard(ctx):
+    sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)
+
+    embed = discord.Embed(title="🏆 Leaderboard", color=0xFFD700)
+
+    for i, (user_id, data) in enumerate(sorted_users[:10], start=1):
+        user_obj = await bot.fetch_user(user_id)
+        wins = data["wins"]
+        losses = data["losses"]
+        total = wins + losses
+        winrate = (wins / total * 100) if total > 0 else 0
+
+        embed.add_field(
+            name=f"#{i} {user_obj.name}",
+            value=f"💰 {data['cp']} CP | 📊 {winrate:.1f}%",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
 
 # ================== RUN ==================
 @bot.event

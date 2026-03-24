@@ -205,6 +205,21 @@ async def balance(ctx):
     await ctx.send(f"💰 You have {user['cp']} CP")
 
 @bot.command()
+async def give(ctx, member: discord.Member, amount: int):
+    if ctx.author.id != INFINITE_USER_ID:
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+
+    if amount <= 0:
+        await ctx.send("Invalid amount.")
+        return
+
+    receiver = get_user(member.id)
+    receiver["cp"] += amount
+
+    await ctx.send(f"🪄 Gave {amount} CP to {member.mention}")
+
+@bot.command()
 async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
     if bet <= 0 or bet > user["cp"]:
@@ -274,8 +289,7 @@ async def send(ctx, member: discord.Member, amount: int):
         await ctx.send("Invalid amount.")
         return
 
-    if ctx.author.id != INFINITE_USER_ID:
-        sender["cp"] -= amount
+    sender["cp"] -= amount
     receiver["cp"] += amount
 
     await ctx.send(f"💸 Sent {amount} CP to {member.mention}")

@@ -17,7 +17,7 @@ bot = commands.Bot(command_prefix='$', intents=intents)
 
 # ================== SETTINGS ==================
 START_CP = 1000
-INFINITE_ROLE = "Infinite Money"  # role name that grants infinite CP
+INFINITE_USER_ID = 1051632565120933898
 
 # ================== DATA ==================
 stats = {}
@@ -98,8 +98,12 @@ class GameView(View):
         dealer_val = hand_value(self.dealer) if reveal else "?"
         embed.add_field(name="Dealer", value=f"{dealer_cards} ({dealer_val})", inline=False)
 
-        user = get_user(self.ctx.author.id)
-        embed.set_footer(text=f"Balance: {user['cp']}")
+        if self.ctx.author.id == INFINITE_USER_ID:
+            embed.set_footer(text="Balance: ∞")
+        else:
+            user = get_user(self.ctx.author.id)
+            embed.set_footer(text=f"Balance: {user['cp']}")
+
         return embed
 
     async def next_hand(self, interaction):
@@ -118,13 +122,12 @@ class GameView(View):
         net = 0
 
         member = self.ctx.author
-        infinite = any(role.name == INFINITE_ROLE for role in member.roles)
+        infinite = member.id == INFINITE_USER_ID
 
         for i, hand in enumerate(self.player_hands):
             val = hand_value(hand)
             bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
 
-            # Blackjack check
             if is_blackjack(hand) and not is_blackjack(self.dealer):
                 payout = int(bet * 1.5)
                 net += payout
@@ -144,7 +147,6 @@ class GameView(View):
                 if not infinite:
                     net -= bet
                 user["losses"] += 1
-            # else push → nothing
 
         if not infinite:
             user["cp"] += net
@@ -152,7 +154,7 @@ class GameView(View):
         self.done = True
         self.clear_items()
         embed = self.get_embed(reveal=True)
-        embed.set_footer(text=f"Result: {net:+} CP | Balance: {user['cp']}")
+        embed.set_footer(text=f"Result: {net:+} CP | Balance: {'∞' if infinite else user['cp']}")
         await interaction.response.edit_message(embed=embed, view=self)
 
     # ===== BUTTONS =====
@@ -171,6 +173,7 @@ class GameView(View):
     @button(label="Double", style=discord.ButtonStyle.blurple)
     async def double(self, interaction, _):
         if len(self.current_hand()) != 2:
+            await interaction.response.send_message("Can't double now.", ephemeral=True)
             return
         self.current_hand().append(draw())
         self.doubled_hands[self.current] = True
@@ -180,6 +183,7 @@ class GameView(View):
     async def split(self, interaction, _):
         hand = self.current_hand()
         if self.split_used or len(hand) != 2:
+            await interaction.response.send_message("Can't split now.", ephemeral=True)
             return
         if get_rank(hand[0]) != get_rank(hand[1]):
             await interaction.response.send_message("Can't split.", ephemeral=True)
@@ -193,6 +197,10 @@ class GameView(View):
 # ================== COMMANDS ==================
 @bot.command()
 async def balance(ctx):
+    if ctx.author.id == INFINITE_USER_ID:
+        await ctx.send("💰 You have ∞ CP")
+        return
+
     user = get_user(ctx.author.id)
     await ctx.send(f"💰 You have {user['cp']} CP")
 
@@ -212,7 +220,7 @@ async def blackjack(ctx, bet: int):
         await ctx.send(embed=view.get_embed(reveal=True))
         return
     elif dealer_bj:
-        if not any(role.name == INFINITE_ROLE for role in ctx.author.roles):
+        if ctx.author.id != INFINITE_USER_ID:
             user["cp"] -= bet
         user["losses"] += 1
         embed = view.get_embed(reveal=True)
@@ -248,7 +256,7 @@ async def slots(ctx, bet: int):
     else:
         payout = -bet
 
-    if not any(role.name == INFINITE_ROLE for role in ctx.author.roles):
+    if ctx.author.id != INFINITE_USER_ID:
         user["cp"] += payout
 
     await ctx.send(f"🎰 {' '.join(roll)}\nResult: {payout:+} CP")
@@ -266,7 +274,7 @@ async def send(ctx, member: discord.Member, amount: int):
         await ctx.send("Invalid amount.")
         return
 
-    if not any(role.name == INFINITE_ROLE for role in ctx.author.roles):
+    if ctx.author.id != INFINITE_USER_ID:
         sender["cp"] -= amount
     receiver["cp"] += amount
 
@@ -282,7 +290,12 @@ async def leaderboard(ctx):
     embed = discord.Embed(title="🏆 Leaderboard", color=0xFFD700)
 
     for i, (user_id, data) in enumerate(sorted_users[:10], start=1):
-        user_obj = await bot.fetch_user(user_id)
+        try:
+            user_obj = await bot.fetch_user(user_id)
+            name = user_obj.name
+        except:
+            name = "Unknown User"
+
         wins = data["wins"]
         losses = data["losses"]
         earned = data["earned"]
@@ -291,7 +304,7 @@ async def leaderboard(ctx):
         winrate = (wins / total * 100) if total > 0 else 0
 
         embed.add_field(
-            name=f"#{i} {user_obj.name}",
+            name=f"#{i} {name}",
             value=f"💰 CP: {cp}\n🏆 Wins: {wins}\n❌ Losses: {losses}\n💸 Total Earned: {earned}\n📊 Win %: {winrate:.1f}%",
             inline=False
         )

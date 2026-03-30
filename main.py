@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from dotenv import load_dotenv
 import os
 import random
@@ -251,7 +251,4 @@ async def blackjack(ctx, bet: int):
         await ctx.send(embed=embed)
         return
 
-    await ctx.send(embed=view.get_embed(), view=view)
-
-# ================== BOT READY ==================
-@
+    await ctx.send(embed=view.get_embed(),

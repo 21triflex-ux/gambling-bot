@@ -215,7 +215,6 @@ async def balance(ctx):
     if ctx.author.id == INFINITE_USER_ID:
         await ctx.send("💰 You have ∞ CP")
         return
-
     user = get_user(ctx.author.id)
     await ctx.send(f"💰 You have {user['cp']} CP")
 
@@ -252,4 +251,7 @@ async def blackjack(ctx, bet: int):
         await ctx.send(embed=embed)
         return
 
-    await ctx.send(embed=view.get_embed(),
+    await ctx.send(embed=view.get_embed(), view=view)
+
+# ================== BOT READY ==================
+@

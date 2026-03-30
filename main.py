@@ -72,8 +72,9 @@ def keep_alive():
     t = Thread(target=run_webserver)
     t.start()
 
-# ================== GAME VIEW ==================
+# ================== GAME VIEW (Blackjack) ==================
 class GameView(View):
+    # (Same as before - no changes needed here)
     def __init__(self, ctx, bet):
         super().__init__(timeout=None)
         self.ctx = ctx
@@ -100,11 +101,8 @@ class GameView(View):
         for i, hand in enumerate(self.player_hands):
             marker = "👉 " if i == self.current and not self.done else ""
             bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
-            embed.add_field(
-                name=f"{marker}Hand {i+1} (Bet: {bet})",
-                value=f"{' '.join(hand)} ({hand_value(hand)})",
-                inline=False
-            )
+            embed.add_field(name=f"{marker}Hand {i+1} (Bet: {bet})",
+                            value=f"{' '.join(hand)} ({hand_value(hand)})", inline=False)
         dealer_cards = ' '.join(self.dealer) if reveal else self.dealer[0] + " ❓"
         dealer_val = hand_value(self.dealer) if reveal else "?"
         embed.add_field(name="Dealer", value=f"{dealer_cards} ({dealer_val})", inline=False)
@@ -132,23 +130,20 @@ class GameView(View):
         for i, hand in enumerate(self.player_hands):
             val = hand_value(hand)
             bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
-
             if is_blackjack(hand) and not is_blackjack(self.dealer):
                 payout = int(bet * 1.5)
                 net += payout
                 user["wins"] += 1
                 user["earned"] += payout
             elif val > 21:
-                if not infinite:
-                    net -= bet
+                if not infinite: net -= bet
                 user["losses"] += 1
             elif dealer_val > 21 or val > dealer_val:
                 net += bet
                 user["wins"] += 1
                 user["earned"] += bet
             elif val < dealer_val:
-                if not infinite:
-                    net -= bet
+                if not infinite: net -= bet
                 user["losses"] += 1
 
         if not infinite:
@@ -156,12 +151,10 @@ class GameView(View):
 
         self.done = True
         self.clear_items()
-
         embed = self.get_embed(reveal=True)
         embed.set_footer(text=f"Result: {net:+} CP | Balance: {'∞' if infinite else user['cp']} CP")
         await interaction.response.edit_message(embed=embed, view=self)
 
-    # Buttons
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction, _):
         self.current_hand().append(draw())
@@ -210,7 +203,6 @@ async def stats(ctx):
     user = get_user(ctx.author.id)
     total = user["wins"] + user["losses"]
     winrate = (user["wins"] / total * 100) if total > 0 else 0.0
-
     embed = discord.Embed(title=f"📊 {ctx.author.name}'s Stats", color=0x00FF00)
     embed.add_field(name="Balance", value=f"{user['cp']} CP", inline=False)
     embed.add_field(name="Wins", value=user["wins"], inline=True)
@@ -225,18 +217,12 @@ async def leaderboard(ctx):
     if not stats:
         await ctx.send("No players yet.")
         return
-
     sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)[:10]
-
     embed = discord.Embed(title="🏆 CP Leaderboard", color=0xFFD700)
     for i, (uid, data) in enumerate(sorted_users, 1):
-        member = ctx.guild.get_member(uid) or await bot.fetch_user(uid)
+        member = ctx.guild.get_member(uid)
         name = member.display_name if member else f"User {uid}"
-        embed.add_field(
-            name=f"#{i} {name}",
-            value=f"**{data['cp']} CP**\nWins: {data['wins']} | Losses: {data['losses']}",
-            inline=False
-        )
+        embed.add_field(name=f"#{i} {name}", value=f"**{data['cp']} CP**", inline=False)
     await ctx.send(embed=embed)
 
 
@@ -265,19 +251,16 @@ async def send(ctx, member: discord.Member, amount: int):
 @bot.command()
 async def slots(ctx, bet: int = 50):
     user = get_user(ctx.author.id)
-    if ctx.author.id != INFINITE_USER_ID and bet > user["cp"]:
-        await ctx.send("❌ You don't have enough CP!")
-        return
-    if bet <= 0:
-        await ctx.send("❌ Bet must be positive!")
+    if bet <= 0 or (ctx.author.id != INFINITE_USER_ID and bet > user["cp"]):
+        await ctx.send("❌ Invalid bet!")
         return
 
     symbols = ["🍒", "🍋", "🍊", "⭐", "💎", "7️⃣"]
     roll = [random.choice(symbols) for _ in range(3)]
 
-    if len(set(roll)) == 1:           # All same
+    if len(set(roll)) == 1:
         payout = bet * 10
-    elif len(set(roll)) == 2:         # Two same
+    elif len(set(roll)) == 2:
         payout = bet * 2
     else:
         payout = -bet
@@ -285,19 +268,19 @@ async def slots(ctx, bet: int = 50):
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] += payout
 
-    result_text = "🎉 **BIG WIN!**" if payout > 0 else "😢 Lost"
-
-    await ctx.send(f"🎰 {' '.join(roll)}\n{result_text} → **{payout:+} CP**")
+    result = "🎉 **BIG WIN!**" if payout > 0 else "😢 Lost"
+    await ctx.send(f"🎰 {' '.join(roll)}\n{result} → **{payout:+} CP**")
 
 
 @bot.command()
 async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
     if bet <= 0 or (ctx.author.id != INFINITE_USER_ID and bet > user["cp"]):
-        await ctx.send("❌ Invalid bet amount!")
+        await ctx.send("❌ Invalid bet!")
         return
 
     view = GameView(ctx, bet)
+    # ... (rest of blackjack command same as before)
     player_bj = is_blackjack(view.player_hands[0])
     dealer_bj = is_blackjack(view.dealer)
 
@@ -326,10 +309,18 @@ async def blackjack(ctx, bet: int):
     await ctx.send(embed=view.get_embed(), view=view)
 
 
-# ================== RUN ==================
+# ================== IMPORTANT: PROCESS COMMANDS ==================
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    print(f"Message received: {message.content}")  # Debug
+    await bot.process_commands(message)
+
+
 @bot.event
 async def on_ready():
-    print(f"✅ {bot.user} is online!")
+    print(f"✅ {bot.user} is online and ready!")
     keep_alive()
 
 bot.run(token)

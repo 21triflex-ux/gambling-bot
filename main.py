@@ -59,7 +59,7 @@ def hand_value(hand):
 def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
 
-# ================== BETTER WEB SERVER (Keep Alive) ==================
+# ================== STRONG KEEP-ALIVE ==================
 app = Flask(__name__)
 
 @app.route('/')
@@ -68,10 +68,10 @@ def home():
 
 @app.route('/ping')
 def ping():
-    return "pong"
+    return "pong", 200
 
 def run_webserver():
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080, debug=False)
 
 def keep_alive():
     t = Thread(target=run_webserver, daemon=True)
@@ -80,7 +80,7 @@ def keep_alive():
 # ================== GAME VIEW ==================
 class GameView(View):
     def __init__(self, ctx, bet):
-        super().__init__(timeout=None)   # ← Changed to None (prevents timeout)
+        super().__init__(timeout=None)  # ← No timeout
         self.ctx = ctx
         self.player_id = ctx.author.id
         self.original_bet = bet
@@ -91,7 +91,6 @@ class GameView(View):
         self.done = False
         self.split_used = False
 
-    # ... [rest of GameView class remains exactly the same] ...
     async def interaction_check(self, interaction):
         if interaction.user.id != self.player_id:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -114,7 +113,7 @@ class GameView(View):
         dealer_cards = ' '.join(self.dealer) if reveal else self.dealer[0] + " ❓"
         dealer_val = hand_value(self.dealer) if reveal else "?"
         embed.add_field(name="Dealer", value=f"{dealer_cards} ({dealer_val})", inline=False)
-        
+
         if self.ctx.author.id == INFINITE_USER_ID:
             embed.set_footer(text="Balance: ∞")
         else:
@@ -169,7 +168,6 @@ class GameView(View):
         embed.set_footer(text=f"Result: {net:+} CP | Balance: {'∞' if infinite else user['cp']}")
         await interaction.response.edit_message(embed=embed, view=self)
 
-    # Buttons (unchanged)
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction, _):
         self.current_hand().append(draw())
@@ -202,7 +200,7 @@ class GameView(View):
         self.doubled_hands = [False, False]
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-# ================== COMMANDS (unchanged) ==================
+# ================== COMMANDS ==================
 @bot.command()
 async def balance(ctx):
     if ctx.author.id == INFINITE_USER_ID:
@@ -214,7 +212,7 @@ async def balance(ctx):
 @bot.command()
 async def give(ctx, member: discord.Member, amount: int):
     if ctx.author.id != INFINITE_USER_ID:
-        await ctx.send("❌ You don't have permission to use this command.")
+        await ctx.send("❌ No permission.")
         return
     if amount <= 0:
         await ctx.send("Invalid amount.")
@@ -230,9 +228,9 @@ async def blackjack(ctx, bet: int):
         await ctx.send("Invalid bet.")
         return
     view = GameView(ctx, bet)
-    # ... rest of your blackjack command stays exactly the same ...
     player_bj = is_blackjack(view.player_hands[0])
     dealer_bj = is_blackjack(view.dealer)
+
     if player_bj and dealer_bj:
         await ctx.send(embed=view.get_embed(reveal=True))
         return
@@ -253,9 +251,8 @@ async def blackjack(ctx, bet: int):
         embed.set_footer(text=f"Blackjack! +{payout} CP")
         await ctx.send(embed=embed)
         return
-    await ctx.send(embed=view.get_embed(), view=view)
 
-# (slots, send, leaderboard commands remain exactly as you had them)
+    await ctx.send(embed=view.get_embed(), view=view)
 
 @bot.command()
 async def slots(ctx, bet: int):
@@ -319,7 +316,15 @@ async def leaderboard(ctx):
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    keep_alive()          # Start keep-alive when bot is ready
+    keep_alive()
+
+@bot.event
+async def on_disconnect():
+    print("⚠️ Bot disconnected from Discord!")
+
+@bot.event
+async def on_resumed():
+    print("✅ Bot connection resumed!")
 
 @bot.event
 async def on_message(message):
@@ -329,4 +334,4 @@ async def on_message(message):
 
 # ================== RUN ==================
 if __name__ == "__main__":
-    bot.run(token)
+    bot.run(token, reconnect=True)

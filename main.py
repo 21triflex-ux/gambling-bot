@@ -1,9 +1,10 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import os
 import random
-import webserver
+from threading import Thread
+from flask import Flask
 from discord.ui import View, button
 
 # ================== SETUP ==================
@@ -57,10 +58,24 @@ def hand_value(hand):
 def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
 
+# ================== WEB SERVER ==================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_webserver():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_webserver)
+    t.start()
+
 # ================== GAME ==================
 class GameView(View):
     def __init__(self, ctx, bet):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)  # Never timeout
         self.ctx = ctx
         self.player_id = ctx.author.id
         self.original_bet = bet
@@ -205,21 +220,6 @@ async def balance(ctx):
     await ctx.send(f"💰 You have {user['cp']} CP")
 
 @bot.command()
-async def give(ctx, member: discord.Member, amount: int):
-    if ctx.author.id != INFINITE_USER_ID:
-        await ctx.send("❌ You don't have permission to use this command.")
-        return
-
-    if amount <= 0:
-        await ctx.send("Invalid amount.")
-        return
-
-    receiver = get_user(member.id)
-    receiver["cp"] += amount
-
-    await ctx.send(f"🪄 Gave {amount} CP to {member.mention}")
-
-@bot.command()
 async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
     if bet <= 0 or bet > user["cp"]:
@@ -252,84 +252,4 @@ async def blackjack(ctx, bet: int):
         await ctx.send(embed=embed)
         return
 
-    await ctx.send(embed=view.get_embed(), view=view)
-
-@bot.command()
-async def slots(ctx, bet: int):
-    user = get_user(ctx.author.id)
-    if bet <= 0 or bet > user["cp"]:
-        await ctx.send("Invalid bet.")
-        return
-
-    symbols = ["🍒","🍋","🍊","⭐","💎"]
-    roll = [random.choice(symbols) for _ in range(3)]
-
-    if len(set(roll)) == 1:
-        payout = bet * 3
-    elif len(set(roll)) == 2:
-        payout = bet * 2
-    else:
-        payout = -bet
-
-    if ctx.author.id != INFINITE_USER_ID:
-        user["cp"] += payout
-
-    await ctx.send(f"🎰 {' '.join(roll)}\nResult: {payout:+} CP")
-
-@bot.command()
-async def send(ctx, member: discord.Member, amount: int):
-    sender = get_user(ctx.author.id)
-    receiver = get_user(member.id)
-
-    if member.id == ctx.author.id:
-        await ctx.send("You can't send to yourself.")
-        return
-
-    if amount <= 0 or amount > sender["cp"]:
-        await ctx.send("Invalid amount.")
-        return
-
-    sender["cp"] -= amount
-    receiver["cp"] += amount
-
-    await ctx.send(f"💸 Sent {amount} CP to {member.mention}")
-
-@bot.command()
-async def leaderboard(ctx):
-    if not stats:
-        await ctx.send("No data yet.")
-        return
-
-    sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)
-    embed = discord.Embed(title="🏆 Leaderboard", color=0xFFD700)
-
-    for i, (user_id, data) in enumerate(sorted_users[:10], start=1):
-        try:
-            user_obj = await bot.fetch_user(user_id)
-            name = user_obj.name
-        except:
-            name = "Unknown User"
-
-        wins = data["wins"]
-        losses = data["losses"]
-        earned = data["earned"]
-        cp = data["cp"]
-        total = wins + losses
-        winrate = (wins / total * 100) if total > 0 else 0
-
-        embed.add_field(
-            name=f"#{i} {name}",
-            value=f"💰 CP: {cp}\n🏆 Wins: {wins}\n❌ Losses: {losses}\n💸 Total Earned: {earned}\n📊 Win %: {winrate:.1f}%",
-            inline=False
-        )
-
-    await ctx.send(embed=embed)
-
-# ================== RUN ==================
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-
-if __name__ == "__main__":
-    webserver.keep_alive()
-    bot.run(token)
+    await ctx.send(embed=view.get_embed(),

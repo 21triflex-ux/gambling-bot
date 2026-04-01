@@ -254,6 +254,30 @@ async def blackjack(ctx, bet: int):
     await ctx.send(embed=view.get_embed(), view=view)
 
 @bot.command()
+async def stats(ctx, member: discord.Member = None):
+    """View your or another player's stats"""
+    member = member or ctx.author
+    user = get_user(member.id)
+
+    wins = user["wins"]
+    losses = user["losses"]
+    total = wins + losses
+    winrate = (wins / total * 100) if total > 0 else 0
+
+    embed = discord.Embed(
+        title=f"📊 Stats for {member.display_name}",
+        color=0x00bfff
+    )
+
+    embed.add_field(name="💰 CP", value=user["cp"], inline=True)
+    embed.add_field(name="🏆 Wins", value=wins, inline=True)
+    embed.add_field(name="❌ Losses", value=losses, inline=True)
+    embed.add_field(name="📊 Win %", value=f"{winrate:.1f}%", inline=True)
+    embed.add_field(name="💸 Total Earned", value=user["earned"], inline=True)
+
+    await ctx.send(embed=embed)
+
+@bot.command()
 async def slots(ctx, bet: int = 50):
     user = get_user(ctx.author.id)
     if bet <= 0 or (ctx.author.id != INFINITE_USER_ID and bet > user["cp"]):
@@ -300,13 +324,30 @@ async def leaderboard(ctx):
     
     sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)[:10]
     embed = discord.Embed(title="🏆 CP Leaderboard", color=0xFFD700)
-    
+
     for i, (uid, data) in enumerate(sorted_users, 1):
-        member = ctx.guild.get_member(uid) or await bot.fetch_user(uid)
-        name = member.display_name if member else f"User {uid}"
-        embed.add_field(name=f"#{i} {name}", 
-                       value=f"**{data['cp']} CP**", 
-                       inline=False)
+        try:
+            member = ctx.guild.get_member(uid) or await bot.fetch_user(uid)
+            name = member.display_name if member else f"User {uid}"
+        except:
+            name = f"User {uid}"
+
+        wins = data["wins"]
+        losses = data["losses"]
+        total = wins + losses
+        winrate = (wins / total * 100) if total > 0 else 0
+
+        embed.add_field(
+            name=f"#{i} {name}",
+            value=(
+                f"💰 **CP:** {data['cp']}\n"
+                f"🏆 Wins: {wins} | ❌ Losses: {losses}\n"
+                f"📊 Win %: {winrate:.1f}%\n"
+                f"💸 Earned: {data['earned']}"
+            ),
+            inline=False
+        )
+
     await ctx.send(embed=embed)
 
 @bot.command()

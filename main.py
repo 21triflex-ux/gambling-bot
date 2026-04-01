@@ -1,5 +1,4 @@
 import discord
-import json
 from discord.ext import commands
 from dotenv import load_dotenv
 import os
@@ -105,9 +104,9 @@ class GameView(View):
         embed = discord.Embed(title="🎴 Blackjack", color=0x006400)
         for i, hand in enumerate(self.player_hands):
             marker = "👉 " if i == self.current and not self.done else ""
-            bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
+            bet_amount = self.original_bet * (2 if self.doubled_hands[i] else 1)
             embed.add_field(
-                name=f"{marker}Hand {i+1} (Bet: {bet})",
+                name=f"{marker}Hand {i+1} (Bet: {bet_amount})",
                 value=f"{' '.join(hand)} ({hand_value(hand)})",
                 inline=False
             )
@@ -138,6 +137,7 @@ class GameView(View):
         for i, hand in enumerate(self.player_hands):
             val = hand_value(hand)
             bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
+
             if is_blackjack(hand) and not is_blackjack(self.dealer):
                 payout = int(bet * 1.5)
                 net += payout
@@ -197,6 +197,7 @@ class GameView(View):
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
+# ================== COMMANDS ==================
 @bot.command()
 async def balance(ctx):
     if ctx.author.id == INFINITE_USER_ID:
@@ -207,17 +208,15 @@ async def balance(ctx):
 
 @bot.command()
 async def give(ctx, member: discord.Member, amount: int):
-    """Admin command - Only Infinite User can use this"""
     if ctx.author.id != INFINITE_USER_ID:
         return await ctx.send("❌ You don't have permission to use this command.")
-    
     if amount <= 0:
         return await ctx.send("❌ Amount must be positive!")
     
     receiver = get_user(member.id)
     receiver["cp"] += amount
-    
     await ctx.send(f"🪄 **Gave {amount} CP** to {member.mention}")
+
 
 @bot.command()
 async def blackjack(ctx, bet: int):
@@ -226,6 +225,7 @@ async def blackjack(ctx, bet: int):
         return await ctx.send("❌ Invalid bet!")
     
     view = GameView(ctx, bet)
+    # Initial checks
     player_bj = is_blackjack(view.player_hands[0])
     dealer_bj = is_blackjack(view.dealer)
 
@@ -253,29 +253,6 @@ async def blackjack(ctx, bet: int):
 
     await ctx.send(embed=view.get_embed(), view=view)
 
-@bot.command()
-async def stats(ctx, member: discord.Member = None):
-    """View your or another player's stats"""
-    member = member or ctx.author
-    user = get_user(member.id)
-
-    wins = user["wins"]
-    losses = user["losses"]
-    total = wins + losses
-    winrate = (wins / total * 100) if total > 0 else 0
-
-    embed = discord.Embed(
-        title=f"📊 Stats for {member.display_name}",
-        color=0x00bfff
-    )
-
-    embed.add_field(name="💰 CP", value=user["cp"], inline=True)
-    embed.add_field(name="🏆 Wins", value=wins, inline=True)
-    embed.add_field(name="❌ Losses", value=losses, inline=True)
-    embed.add_field(name="📊 Win %", value=f"{winrate:.1f}%", inline=True)
-    embed.add_field(name="💸 Total Earned", value=user["earned"], inline=True)
-
-    await ctx.send(embed=embed)
 
 @bot.command()
 async def slots(ctx, bet: int = 50):
@@ -299,6 +276,7 @@ async def slots(ctx, bet: int = 50):
     result = "🎉 **BIG WIN!**" if payout > 0 else "😢 Lost"
     await ctx.send(f"🎰 {' '.join(roll)}\n{result} → **{payout:+} CP**")
 
+
 @bot.command()
 async def send(ctx, member: discord.Member, amount: int):
     if member.id == ctx.author.id:
@@ -317,6 +295,7 @@ async def send(ctx, member: discord.Member, amount: int):
 
     await ctx.send(f"✅ Sent **{amount} CP** to {member.mention}")
 
+
 @bot.command()
 async def leaderboard(ctx):
     if not stats:
@@ -324,40 +303,34 @@ async def leaderboard(ctx):
     
     sorted_users = sorted(stats.items(), key=lambda x: x[1]["cp"], reverse=True)[:10]
     embed = discord.Embed(title="🏆 CP Leaderboard", color=0xFFD700)
-
+    
     for i, (uid, data) in enumerate(sorted_users, 1):
         try:
             member = ctx.guild.get_member(uid) or await bot.fetch_user(uid)
             name = member.display_name if member else f"User {uid}"
         except:
             name = f"User {uid}"
-
+        
         wins = data["wins"]
         losses = data["losses"]
         total = wins + losses
         winrate = (wins / total * 100) if total > 0 else 0
-
+        
         embed.add_field(
             name=f"#{i} {name}",
-            value=(
-                f"💰 **CP:** {data['cp']}\n"
-                f"🏆 Wins: {wins} | ❌ Losses: {losses}\n"
-                f"📊 Win %: {winrate:.1f}%\n"
-                f"💸 Earned: {data['earned']}"
-            ),
+            value=f"💰 **{data['cp']} CP**\n🏆 Wins: {wins} | ❌ Losses: {losses}\n📊 Win Rate: {winrate:.1f}%",
             inline=False
         )
-
     await ctx.send(embed=embed)
+
 
 @bot.command()
 async def dailybox(ctx):
-    # ... (your dailybox code - kept as is)
     uid = ctx.author.id
     now = datetime.utcnow()
     if uid in daily_data and "box" in daily_data[uid]:
         if (now - daily_data[uid]["box"]).total_seconds() < 86400:
-            return await ctx.send("⏳ You already opened your daily box.")
+            return await ctx.send("⏳ You already opened your daily box today.")
     
     roll = random.randint(1, 100)
     if roll <= 60:
@@ -374,11 +347,11 @@ async def dailybox(ctx):
     if uid != INFINITE_USER_ID:
         user["cp"] += reward
     daily_data.setdefault(uid, {})["box"] = now
-    await ctx.send(f"🎁 {tier} Box → +{reward} CP")
+    await ctx.send(f"🎁 **{tier} Box** → +{reward} CP")
+
 
 @bot.command()
 async def daily(ctx):
-    # ... (your daily command - kept as is)
     uid = ctx.author.id
     now = datetime.utcnow()
     data = daily_data.setdefault(uid, {"streak": 0, "last": None})
@@ -386,11 +359,8 @@ async def daily(ctx):
     if data["last"]:
         diff = (now - data["last"]).total_seconds()
         if diff < 86400:
-            return await ctx.send("⏳ Already claimed daily today.")
-        if diff <= 172800:
-            data["streak"] += 1
-        else:
-            data["streak"] = 1
+            return await ctx.send("⏳ You already claimed your daily reward today!")
+        data["streak"] = data["streak"] + 1 if diff <= 172800 else 1
     else:
         data["streak"] = 1
 
@@ -403,29 +373,29 @@ async def daily(ctx):
         user["cp"] += total
     data["last"] = now
 
-    await ctx.send(f"🔥 Daily Reward!\nBase: {base}\nStreak: {data['streak']} (+{bonus})\n💰 **Total: {total} CP**")
+    await ctx.send(f"🔥 **Daily Reward!**\nBase: {base} CP\nStreak: {data['streak']} (+{bonus} CP)\n💰 **Total: {total} CP**")
+
 
 @bot.command()
 async def rps(ctx, opponent: discord.Member):
-    # ... (your rps command - kept as is)
     if opponent.bot or opponent == ctx.author:
         return await ctx.send("❌ Invalid opponent.")
-    
-    await ctx.send(f"📩 {ctx.author.mention} and {opponent.mention}, check your DMs!")
-    
+
+    await ctx.send(f"📩 {ctx.author.mention} & {opponent.mention} — Check your DMs!")
+
     choices = {}
     def check(m):
         return m.author in [ctx.author, opponent] and isinstance(m.channel, discord.DMChannel)
-    
+
     try:
         while len(choices) < 2:
             msg = await bot.wait_for("message", timeout=60, check=check)
             choice = msg.content.lower().strip()
             if choice not in ["rock", "paper", "scissors"]:
-                await msg.author.send("❌ Please send only: `rock`, `paper`, or `scissors`")
+                await msg.author.send("❌ Please reply with `rock`, `paper`, or `scissors`")
                 continue
             choices[msg.author.id] = choice
-            await msg.author.send("✅ Choice locked in!")
+            await msg.author.send("✅ Choice locked!")
     except:
         return await ctx.send("⏰ Game timed out.")
 
@@ -443,14 +413,16 @@ async def rps(ctx, opponent: discord.Member):
 
     bet = 200
     winner_user = get_user(winner.id)
-    loser_user = get_user(opponent.id if winner == ctx.author else ctx.author.id)
+    loser_id = opponent.id if winner == ctx.author else ctx.author.id
+    loser_user = get_user(loser_id)
 
     if winner.id != INFINITE_USER_ID:
         winner_user["cp"] += bet
-    if loser_user["cp"] > bet:   # prevent negative
+    if loser_user["cp"] >= bet:
         loser_user["cp"] -= bet
 
     await ctx.send(f"🏆 **{winner.mention} wins {bet} CP!**")
+
 
 # ================== EVENTS ==================
 @bot.event
@@ -463,6 +435,7 @@ async def on_message(message):
     if message.author.bot:
         return
     await bot.process_commands(message)
+
 
 # ================== RUN ==================
 if __name__ == "__main__":

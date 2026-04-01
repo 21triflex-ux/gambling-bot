@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import json
 import os
 import random
 from threading import Thread
@@ -24,6 +25,45 @@ INFINITE_USER_ID = 1051632565120933898
 # ================== DATA ==================
 stats = {}
 daily_data = {}
+
+def load_data():
+    if not os.path.exists("user_data.json"):
+        return {}
+
+    try:
+        with open("user_data.json", "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_data(data):
+    with open("user_data.json", "w") as f:
+        json.dump(data, f, indent=4)
+
+def get_balance(user_id):
+    data = load_data()
+    return data.get(str(user_id), 0)
+
+def add_cp(user_id, amount):
+    data = load_data()
+    uid = str(user_id)
+
+    if uid not in data:
+        data[uid] = 0
+
+    data[uid] += amount
+    save_data(data)
+
+def remove_cp(user_id, amount):
+    data = load_data()
+    uid = str(user_id)
+
+    if uid not in data or data[uid] < amount:
+        return False
+
+    data[uid] -= amount
+    save_data(data)
+    return True
 
 def get_user(user_id):
     if user_id not in stats:
@@ -375,6 +415,10 @@ async def daily(ctx):
 
     await ctx.send(f"🔥 **Daily Reward!**\nBase: {base} CP\nStreak: {data['streak']} (+{bonus} CP)\n💰 **Total: {total} CP**")
 
+@bot.command()
+async def bal(ctx):
+    bal = get_balance(ctx.author.id)
+    await ctx.send(f"You have {bal} CP")
 
 @bot.command()
 async def rps(ctx, opponent: discord.Member):

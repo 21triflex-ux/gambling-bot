@@ -219,10 +219,6 @@ async def give(ctx, member: discord.Member, amount: int):
     
     await ctx.send(f"🪄 **Gave {amount} CP** to {member.mention}")
 
-
-@bot.command()
-async def blackjack(ctx, bet: int):
-
 @bot.command()
 async def balance(ctx):
     if ctx.author.id == INFINITE_USER_ID:

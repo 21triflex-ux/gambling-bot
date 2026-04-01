@@ -197,7 +197,31 @@ class GameView(View):
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-# ================== COMMANDS ==================
+@bot.command()
+async def balance(ctx):
+    if ctx.author.id == INFINITE_USER_ID:
+        return await ctx.send("💰 You have **∞ CP**")
+    user = get_user(ctx.author.id)
+    await ctx.send(f"💰 You have **{user['cp']} CP**")
+
+
+@bot.command()
+async def give(ctx, member: discord.Member, amount: int):
+    """Admin command - Only Infinite User can use this"""
+    if ctx.author.id != INFINITE_USER_ID:
+        return await ctx.send("❌ You don't have permission to use this command.")
+    
+    if amount <= 0:
+        return await ctx.send("❌ Amount must be positive!")
+    
+    receiver = get_user(member.id)
+    receiver["cp"] += amount
+    
+    await ctx.send(f"🪄 **Gave {amount} CP** to {member.mention}")
+
+
+@bot.command()
+async def blackjack(ctx, bet: int):
 
 @bot.command()
 async def balance(ctx):

@@ -7,7 +7,7 @@ import random
 from threading import Thread
 from flask import Flask
 from discord.ui import View, button
-from datetime import datetime, timedelta
+from datetime import datetime
 import asyncio
 
 load_dotenv()
@@ -24,7 +24,10 @@ START_CP = 1000
 INFINITE_USER_ID = 1051632565120933898
 DATA_FILE = "user_data.json"
 DAILY_FILE = "daily_data.json"
-CHANNEL_ID = 1483198015509500035  # ←←← CHANGE THIS TO YOUR CHANNEL ID
+CHANNEL_ID = 123456789012345678  # ←←← CHANGE THIS TO YOUR REAL CHANNEL ID
+
+# Global for RPS games
+rps_games = {}
 
 # ================== DATA MANAGEMENT ==================
 user_data = {}
@@ -92,10 +95,10 @@ def hand_value(hand):
 def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
 
-# ================== THIEF EVENT ==================
+# ================== THIEF EVENT (Fixed) ==================
 def pick_weighted_users(count=3):
     users = [(uid, cp) for uid, cp in user_data.items() 
-             if int(uid) != INFINITE_USER_ID and cp >= 50]
+             if int(uid) != INFINITE_USER_ID and cp >= 10]  # lowered threshold so it works with small player base
     if len(users) < count:
         return users[:count]
     
@@ -111,34 +114,39 @@ def pick_weighted_users(count=3):
     return [(uid, user_data[uid]) for uid in selected]
 
 async def thief_event(channel):
-    if not user_data:
-        return
-    targets = pick_weighted_users(3)
-    if not targets:
-        return await channel.send("🕵️ The thief found no worthy targets tonight...")
-    
-    results = []
-    thief_names = ["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"]
-    thief_name = random.choice(thief_names)
-    total_stolen = 0
-
-    for uid, cp in targets:
-        steal_percent = random.uniform(0.06, 0.18)
-        stolen = max(15, int(cp * steal_percent))
-        stolen = min(stolen, cp)
+    try:
+        if not user_data:
+            return await channel.send("🕵️ No players yet...")
         
-        user_data[uid] -= stolen
-        total_stolen += stolen
-        results.append((uid, stolen))
+        targets = pick_weighted_users(3)
+        if not targets:
+            return await channel.send("🕵️ The thief found no worthy targets tonight... (need more players with ≥10 CP)")
+        
+        results = []
+        thief_names = ["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"]
+        thief_name = random.choice(thief_names)
+        total_stolen = 0
 
-    save_all()
+        for uid, cp in targets:
+            steal_percent = random.uniform(0.06, 0.18)
+            stolen = max(15, int(cp * steal_percent))
+            stolen = min(stolen, cp)
+            
+            user_data[uid] -= stolen
+            total_stolen += stolen
+            results.append((uid, stolen))
 
-    msg = f"**🕵️ {thief_name} has struck in the night!**\n\n"
-    for uid, stolen in results:
-        msg += f"<@{uid}> lost **{stolen} CP**\n"
-    msg += f"\n**Total Stolen:** {total_stolen} CP"
-    
-    await channel.send(msg)
+        save_all()
+
+        msg = f"**🕵️ {thief_name} has struck in the night!**\n\n"
+        for uid, stolen in results:
+            msg += f"<@{uid}> lost **{stolen} CP**\n"
+        msg += f"\n**Total Stolen:** {total_stolen} CP"
+        
+        await channel.send(msg)
+    except Exception as e:
+        print(f"Thief event error: {e}")
+        await channel.send("🕵️ Thief event failed (check console).")
 
 @tasks.loop(hours=24)
 async def run_thief():
@@ -164,7 +172,7 @@ def ping():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
-# ================== BLACKJACK VIEW ==================
+# ================== BLACKJACK VIEW (unchanged) ==================
 class GameView(View):
     def __init__(self, ctx, bet):
         super().__init__(timeout=None)
@@ -283,6 +291,80 @@ class GameView(View):
         self.doubled_hands = [False, False]
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+# ================== NEW RPS BUTTON VIEW ==================
+class RPSView(View):
+    def __init__(self, player, opponent, game_id, original_channel):
+        super().__init__(timeout=60)
+        self.player = player
+        self.opponent = opponent
+        self.game_id = game_id
+        self.original_channel = original_channel
+
+    async def interaction_check(self, interaction):
+        return interaction.user.id == self.player.id
+
+    async def record_choice(self, interaction, choice):
+        game = rps_games.get(self.game_id)
+        if not game:
+            await interaction.response.send_message("Game expired.", ephemeral=True)
+            return
+
+        game["choices"][self.player.id] = choice
+        self.clear_items()
+        await interaction.response.edit_message(content=f"✅ You locked in **{choice.upper()}**!", view=self)
+
+        # Check if both players have chosen
+        if len(game["choices"]) == 2:
+            await self.resolve_game()
+
+    @button(label="🪨 Rock", style=discord.ButtonStyle.gray)
+    async def rock(self, interaction, _):
+        await self.record_choice(interaction, "rock")
+
+    @button(label="📄 Paper", style=discord.ButtonStyle.gray)
+    async def paper(self, interaction, _):
+        await self.record_choice(interaction, "paper")
+
+    @button(label="✂️ Scissors", style=discord.ButtonStyle.gray)
+    async def scissors(self, interaction, _):
+        await self.record_choice(interaction, "scissors")
+
+    async def resolve_game(self):
+        game = rps_games[self.game_id]
+        p1, p2 = game["players"]
+        c1 = game["choices"][p1.id]
+        c2 = game["choices"][p2.id]
+
+        if c1 == c2:
+            result_msg = f"🤝 Tie! Both played **{c1}**"
+            winner = None
+        elif (c1 == "rock" and c2 == "scissors") or \
+             (c1 == "paper" and c2 == "rock") or \
+             (c1 == "scissors" and c2 == "paper"):
+            winner = p1
+            result_msg = f"🏆 **{p1.mention} wins 200 CP!**"
+        else:
+            winner = p2
+            result_msg = f"🏆 **{p2.mention} wins 200 CP!**"
+
+        # Announce in original channel
+        await self.original_channel.send(f"**RPS Result**\n{result_msg}")
+
+        # Award CP
+        bet = 200
+        if winner:
+            winner_user = get_user(winner.id)
+            loser_id = p1.id if winner == p2 else p2.id
+            loser_user = get_user(loser_id)
+            if winner.id != INFINITE_USER_ID:
+                winner_user["cp"] += bet
+            if loser_user["cp"] >= bet:
+                loser_user["cp"] -= bet
+            save_all()
+
+        # Clean up
+        del rps_games[self.game_id]
 
 # ================== COMMANDS ==================
 @bot.command()
@@ -406,13 +488,15 @@ async def leaderboard(ctx):
         )
     await ctx.send(embed=embed)
 
+# FIXED dailybox
 @bot.command()
 async def dailybox(ctx):
-    uid = ctx.author.id
+    uid = str(ctx.author.id)
     now = datetime.utcnow()
-    daily_data.setdefault(str(uid), {})["box"] = daily_data.get(str(uid), {}).get("box")
-    if str(uid) in daily_data and "box" in daily_data[str(uid)]:
-        last = datetime.fromisoformat(daily_data[str(uid)]["box"])
+    user_daily = daily_data.setdefault(uid, {})
+    
+    if "box" in user_daily:
+        last = datetime.fromisoformat(user_daily["box"])
         if (now - last).total_seconds() < 86400:
             return await ctx.send("⏳ You already opened your daily box today.")
     
@@ -427,10 +511,10 @@ async def dailybox(ctx):
         reward = random.randint(800, 1500)
         tier = "ULTRA"
     
-    user = get_user(uid)
-    if uid != INFINITE_USER_ID:
+    user = get_user(ctx.author.id)
+    if ctx.author.id != INFINITE_USER_ID:
         user["cp"] += reward
-    daily_data[str(uid)]["box"] = now.isoformat()
+    user_daily["box"] = now.isoformat()
     await ctx.send(f"🎁 **{tier} Box** → +{reward} CP")
     save_all()
 
@@ -459,44 +543,33 @@ async def daily(ctx):
     await ctx.send(f"🔥 **Daily Reward!**\nBase: {base} CP\nStreak: {data['streak']} (+{bonus} CP)\n💰 **Total: {total} CP**")
     save_all()
 
+# NEW BUTTON-BASED RPS
 @bot.command()
 async def rps(ctx, opponent: discord.Member):
     if opponent.bot or opponent == ctx.author:
         return await ctx.send("❌ Invalid opponent.")
-    await ctx.send(f"📩 {ctx.author.mention} & {opponent.mention} — Check your DMs!")
-    choices = {}
-    def check(m):
-        return m.author in [ctx.author, opponent] and isinstance(m.channel, discord.DMChannel)
-    try:
-        while len(choices) < 2:
-            msg = await bot.wait_for("message", timeout=60, check=check)
-            choice = msg.content.lower().strip()
-            if choice not in ["rock", "paper", "scissors"]:
-                await msg.author.send("❌ Please reply with `rock`, `paper`, or `scissors`")
-                continue
-            choices[msg.author.id] = choice
-            await msg.author.send("✅ Choice locked!")
-    except:
-        return await ctx.send("⏰ Game timed out.")
-    p1 = choices.get(ctx.author.id)
-    p2 = choices.get(opponent.id)
-    if p1 == p2:
-        return await ctx.send(f"🤝 Tie! Both played **{p1}**")
-    winner = ctx.author if (
-        (p1 == "rock" and p2 == "scissors") or
-        (p1 == "paper" and p2 == "rock") or
-        (p1 == "scissors" and p2 == "paper")
-    ) else opponent
-    bet = 200
-    winner_user = get_user(winner.id)
-    loser_id = opponent.id if winner == ctx.author else ctx.author.id
-    loser_user = get_user(loser_id)
-    if winner.id != INFINITE_USER_ID:
-        winner_user["cp"] += bet
-    if loser_user["cp"] >= bet:
-        loser_user["cp"] -= bet
-    await ctx.send(f"🏆 **{winner.mention} wins {bet} CP!**")
-    save_all()
+    
+    game_id = tuple(sorted([ctx.author.id, opponent.id]))
+    if game_id in rps_games:
+        return await ctx.send("❌ A game between you two is already running.")
+    
+    rps_games[game_id] = {
+        "choices": {},
+        "players": [ctx.author, opponent],
+        "channel": ctx.channel
+    }
+    
+    await ctx.send(f"📩 {ctx.author.mention} & {opponent.mention} — Check your **DMs** for interactive Rock Paper Scissors buttons!")
+
+    for player in [ctx.author, opponent]:
+        view = RPSView(player, opponent, game_id, ctx.channel)
+        try:
+            await player.send("**🪨 Rock Paper Scissors!**\nChoose your move below:", view=view)
+        except discord.Forbidden:
+            await ctx.send(f"❌ Could not DM {player.mention} (they have DMs disabled).")
+            if game_id in rps_games:
+                del rps_games[game_id]
+            return
 
 @bot.command()
 async def stealnow(ctx):
@@ -512,7 +585,6 @@ async def on_ready():
     keep_alive()
     run_thief.start()
     
-    # Optional: auto-save every 5 minutes
     async def autosave():
         while True:
             await asyncio.sleep(300)

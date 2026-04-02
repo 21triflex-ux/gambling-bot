@@ -50,6 +50,18 @@ def load_all():
     global user_data, daily_data
     user_data = load_json(DATA_FILE)
     daily_data = load_json(DAILY_FILE)
+    
+    # === DATA REPAIR (fixes old/corrupted entries) ===
+    for uid in list(user_data.keys()):
+        stats = user_data[uid]
+        if not isinstance(stats.get("cp"), int):
+            try:
+                stats["cp"] = int(float(stats.get("cp", START_CP)))
+            except:
+                stats["cp"] = START_CP
+        if "wins" not in stats: stats["wins"] = 0
+        if "losses" not in stats: stats["losses"] = 0
+        if "earned" not in stats: stats["earned"] = 0
 
 def save_all():
     save_json(user_data, DATA_FILE)
@@ -95,10 +107,10 @@ def hand_value(hand):
 def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
 
-# ================== THIEF EVENT (Fixed) ==================
+# ================== THIEF EVENT (NOW WITH FULL ERROR REPORTING) ==================
 def pick_weighted_users(count=3):
     users = [(uid, cp) for uid, cp in user_data.items() 
-             if int(uid) != INFINITE_USER_ID and cp >= 10]  # lowered threshold so it works with small player base
+             if int(uid) != INFINITE_USER_ID and cp >= 5]   # lowered so it works with small groups
     if len(users) < count:
         return users[:count]
     
@@ -120,7 +132,7 @@ async def thief_event(channel):
         
         targets = pick_weighted_users(3)
         if not targets:
-            return await channel.send("🕵️ The thief found no worthy targets tonight... (need more players with ≥10 CP)")
+            return await channel.send("🕵️ The thief found no worthy targets tonight... (need more players with ≥5 CP)")
         
         results = []
         thief_names = ["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"]
@@ -144,9 +156,12 @@ async def thief_event(channel):
         msg += f"\n**Total Stolen:** {total_stolen} CP"
         
         await channel.send(msg)
+
     except Exception as e:
-        print(f"Thief event error: {e}")
-        await channel.send("🕵️ Thief event failed (check console).")
+        # ←←← THIS NOW SHOWS THE EXACT ERROR IN DISCORD
+        error_msg = f"🕵️ **Thief event failed**: {type(e).__name__} → {e}"
+        print(error_msg)           # still prints to console too
+        await channel.send(error_msg)
 
 @tasks.loop(hours=24)
 async def run_thief():
@@ -172,7 +187,7 @@ def ping():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
-# ================== BLACKJACK VIEW (unchanged) ==================
+# ================== BLACKJACK VIEW ==================
 class GameView(View):
     def __init__(self, ctx, bet):
         super().__init__(timeout=None)
@@ -292,7 +307,7 @@ class GameView(View):
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-# ================== NEW RPS BUTTON VIEW ==================
+# ================== RPS VIEW (unchanged) ==================
 class RPSView(View):
     def __init__(self, player, opponent, game_id, original_channel):
         super().__init__(timeout=60)
@@ -314,7 +329,6 @@ class RPSView(View):
         self.clear_items()
         await interaction.response.edit_message(content=f"✅ You locked in **{choice.upper()}**!", view=self)
 
-        # Check if both players have chosen
         if len(game["choices"]) == 2:
             await self.resolve_game()
 
@@ -339,19 +353,15 @@ class RPSView(View):
         if c1 == c2:
             result_msg = f"🤝 Tie! Both played **{c1}**"
             winner = None
-        elif (c1 == "rock" and c2 == "scissors") or \
-             (c1 == "paper" and c2 == "rock") or \
-             (c1 == "scissors" and c2 == "paper"):
+        elif (c1 == "rock" and c2 == "scissors") or (c1 == "paper" and c2 == "rock") or (c1 == "scissors" and c2 == "paper"):
             winner = p1
             result_msg = f"🏆 **{p1.mention} wins 200 CP!**"
         else:
             winner = p2
             result_msg = f"🏆 **{p2.mention} wins 200 CP!**"
 
-        # Announce in original channel
         await self.original_channel.send(f"**RPS Result**\n{result_msg}")
 
-        # Award CP
         bet = 200
         if winner:
             winner_user = get_user(winner.id)
@@ -363,7 +373,6 @@ class RPSView(View):
                 loser_user["cp"] -= bet
             save_all()
 
-        # Clean up
         del rps_games[self.game_id]
 
 # ================== COMMANDS ==================
@@ -394,12 +403,9 @@ async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
     if bet <= 0 or (ctx.author.id != INFINITE_USER_ID and bet > user["cp"]):
         return await ctx.send("❌ Invalid bet!")
-    
     view = GameView(ctx, bet)
-    
     player_bj = is_blackjack(view.player_hands[0])
     dealer_bj = is_blackjack(view.dealer)
-    
     if player_bj and dealer_bj:
         await ctx.send(embed=view.get_embed(reveal=True))
         return
@@ -423,7 +429,6 @@ async def blackjack(ctx, bet: int):
         await ctx.send(embed=embed)
         save_all()
         return
-    
     await ctx.send(embed=view.get_embed(), view=view)
 
 @bot.command()
@@ -431,20 +436,16 @@ async def slots(ctx, bet: int = 50):
     user = get_user(ctx.author.id)
     if bet <= 0 or (ctx.author.id != INFINITE_USER_ID and bet > user["cp"]):
         return await ctx.send("❌ Invalid bet!")
-    
     symbols = ["🍒","🍋","🍊","⭐","💎","7️⃣"]
     roll = [random.choice(symbols) for _ in range(3)]
-    
     if len(set(roll)) == 1:
         payout = bet * 8
     elif len(set(roll)) == 2:
         payout = bet * 2
     else:
         payout = -bet
-    
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] += payout
-    
     result = "🎉 **BIG WIN!**" if payout > 0 else "😢 Lost"
     await ctx.send(f"🎰 {' '.join(roll)}\n{result} → **{payout:+} CP**")
     save_all()
@@ -488,18 +489,15 @@ async def leaderboard(ctx):
         )
     await ctx.send(embed=embed)
 
-# FIXED dailybox
 @bot.command()
 async def dailybox(ctx):
     uid = str(ctx.author.id)
     now = datetime.utcnow()
     user_daily = daily_data.setdefault(uid, {})
-    
     if "box" in user_daily:
         last = datetime.fromisoformat(user_daily["box"])
         if (now - last).total_seconds() < 86400:
             return await ctx.send("⏳ You already opened your daily box today.")
-    
     roll = random.randint(1, 100)
     if roll <= 60:
         reward = random.randint(100, 250)
@@ -510,7 +508,6 @@ async def dailybox(ctx):
     else:
         reward = random.randint(800, 1500)
         tier = "ULTRA"
-    
     user = get_user(ctx.author.id)
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] += reward
@@ -523,7 +520,6 @@ async def daily(ctx):
     uid = str(ctx.author.id)
     now = datetime.utcnow()
     data = daily_data.setdefault(uid, {"streak": 0, "last": None})
-    
     if data["last"]:
         last = datetime.fromisoformat(data["last"])
         diff = (now - last).total_seconds()
@@ -532,7 +528,6 @@ async def daily(ctx):
         data["streak"] = data["streak"] + 1 if diff <= 172800 else 1
     else:
         data["streak"] = 1
-    
     base = random.randint(150, 300)
     bonus = data["streak"] * 25
     total = base + bonus
@@ -543,24 +538,19 @@ async def daily(ctx):
     await ctx.send(f"🔥 **Daily Reward!**\nBase: {base} CP\nStreak: {data['streak']} (+{bonus} CP)\n💰 **Total: {total} CP**")
     save_all()
 
-# NEW BUTTON-BASED RPS
 @bot.command()
 async def rps(ctx, opponent: discord.Member):
     if opponent.bot or opponent == ctx.author:
         return await ctx.send("❌ Invalid opponent.")
-    
     game_id = tuple(sorted([ctx.author.id, opponent.id]))
     if game_id in rps_games:
         return await ctx.send("❌ A game between you two is already running.")
-    
     rps_games[game_id] = {
         "choices": {},
         "players": [ctx.author, opponent],
         "channel": ctx.channel
     }
-    
     await ctx.send(f"📩 {ctx.author.mention} & {opponent.mention} — Check your **DMs** for interactive Rock Paper Scissors buttons!")
-
     for player in [ctx.author, opponent]:
         view = RPSView(player, opponent, game_id, ctx.channel)
         try:
@@ -576,6 +566,13 @@ async def stealnow(ctx):
     if ctx.author.id != INFINITE_USER_ID:
         return await ctx.send("❌ Only the owner can force the thief event.")
     await thief_event(ctx.channel)
+
+# NEW DEBUG COMMAND
+@bot.command()
+async def thiefdebug(ctx):
+    if ctx.author.id != INFINITE_USER_ID:
+        return await ctx.send("❌ Owner only.")
+    await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}\n`user_data = {user_data}`")
 
 # ================== EVENTS ==================
 @bot.event

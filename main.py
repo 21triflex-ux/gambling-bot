@@ -24,7 +24,11 @@ START_CP = 1000
 INFINITE_USER_ID = 1051632565120933898
 DATA_FILE = "user_data.json"
 DAILY_FILE = "daily_data.json"
-CHANNEL_ID = 1483198015509500035  # ←←← CHANGE THIS TO YOUR REAL CHANNEL ID
+CHANNEL_ID = 123456789012345678  # ←←← CHANGE TO YOUR REAL CHANNEL ID
+
+# Inactivity auto-sleep settings
+INACTIVITY_TIMEOUT = 180  # 3 minutes in seconds
+last_activity = None
 
 # Global for RPS games
 rps_games = {}
@@ -51,7 +55,7 @@ def load_all():
     user_data = load_json(DATA_FILE)
     daily_data = load_json(DAILY_FILE)
     
-    # === DATA REPAIR (fixes old/corrupted entries) ===
+    # Data repair for old/corrupted entries
     for uid in list(user_data.keys()):
         stats = user_data[uid]
         if not isinstance(stats.get("cp"), int):
@@ -70,13 +74,19 @@ def save_all():
 def get_user(user_id):
     uid = str(user_id)
     if uid not in user_data:
-        user_data[uid] = {
-            "cp": START_CP,
-            "wins": 0,
-            "losses": 0,
-            "earned": 0
-        }
+        user_data[uid] = {"cp": START_CP, "wins": 0, "losses": 0, "earned": 0}
     return user_data[uid]
+
+# ================== INACTIVITY AUTO-SLEEP ==================
+@tasks.loop(seconds=30)
+async def inactivity_check():
+    global last_activity
+    if last_activity is None:
+        return
+    seconds_since = (datetime.utcnow() - last_activity).total_seconds()
+    if seconds_since > INACTIVITY_TIMEOUT:
+        print(f"🛑 No activity for {INACTIVITY_TIMEOUT//60} minutes → Shutting down bot...")
+        await bot.close()
 
 # ================== CARDS (Blackjack) ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
@@ -106,86 +116,6 @@ def hand_value(hand):
 
 def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
-
-# ================== THIEF EVENT (NOW WITH FULL ERROR REPORTING) ==================
-def pick_weighted_users(count=3):
-    users = [(uid, cp) for uid, cp in user_data.items() 
-             if int(uid) != INFINITE_USER_ID and cp >= 5]   # lowered so it works with small groups
-    if len(users) < count:
-        return users[:count]
-    
-    weighted = []
-    for uid, cp in users:
-        weight = max(1, int(cp ** 0.5))
-        weighted.extend([uid] * weight)
-    
-    selected = set()
-    while len(selected) < count and weighted:
-        selected.add(random.choice(weighted))
-    
-    return [(uid, user_data[uid]) for uid in selected]
-
-async def thief_event(channel):
-    try:
-        if not user_data:
-            return await channel.send("🕵️ No players yet...")
-        
-        targets = pick_weighted_users(3)
-        if not targets:
-            return await channel.send("🕵️ The thief found no worthy targets tonight... (need more players with ≥5 CP)")
-        
-        results = []
-        thief_names = ["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"]
-        thief_name = random.choice(thief_names)
-        total_stolen = 0
-
-        for uid, cp in targets:
-            steal_percent = random.uniform(0.06, 0.18)
-            stolen = max(15, int(cp * steal_percent))
-            stolen = min(stolen, cp)
-            
-            user_data[uid] -= stolen
-            total_stolen += stolen
-            results.append((uid, stolen))
-
-        save_all()
-
-        msg = f"**🕵️ {thief_name} has struck in the night!**\n\n"
-        for uid, stolen in results:
-            msg += f"<@{uid}> lost **{stolen} CP**\n"
-        msg += f"\n**Total Stolen:** {total_stolen} CP"
-        
-        await channel.send(msg)
-
-    except Exception as e:
-        # ←←← THIS NOW SHOWS THE EXACT ERROR IN DISCORD
-        error_msg = f"🕵️ **Thief event failed**: {type(e).__name__} → {e}"
-        print(error_msg)           # still prints to console too
-        await channel.send(error_msg)
-
-@tasks.loop(hours=24)
-async def run_thief():
-    channel = bot.get_channel(CHANNEL_ID)
-    if channel:
-        await thief_event(channel)
-
-@run_thief.before_loop
-async def before_thief():
-    await bot.wait_until_ready()
-
-# ================== KEEP ALIVE ==================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is alive! ✅"
-
-@app.route('/ping')
-def ping():
-    return "pong", 200
-
-def keep_alive():
-    Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
 # ================== BLACKJACK VIEW ==================
 class GameView(View):
@@ -307,7 +237,7 @@ class GameView(View):
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-# ================== RPS VIEW (unchanged) ==================
+# ================== RPS BUTTON VIEW ==================
 class RPSView(View):
     def __init__(self, player, opponent, game_id, original_channel):
         super().__init__(timeout=60)
@@ -324,7 +254,6 @@ class RPSView(View):
         if not game:
             await interaction.response.send_message("Game expired.", ephemeral=True)
             return
-
         game["choices"][self.player.id] = choice
         self.clear_items()
         await interaction.response.edit_message(content=f"✅ You locked in **{choice.upper()}**!", view=self)
@@ -373,7 +302,80 @@ class RPSView(View):
                 loser_user["cp"] -= bet
             save_all()
 
-        del rps_games[self.game_id]
+        if self.game_id in rps_games:
+            del rps_games[self.game_id]
+
+# ================== THIEF EVENT ==================
+def pick_weighted_users(count=3):
+    users = [(uid, cp) for uid, cp in user_data.items() 
+             if int(uid) != INFINITE_USER_ID and cp >= 5]
+    if len(users) < count:
+        return users[:count]
+    weighted = []
+    for uid, cp in users:
+        weight = max(1, int(cp ** 0.5))
+        weighted.extend([uid] * weight)
+    selected = set()
+    while len(selected) < count and weighted:
+        selected.add(random.choice(weighted))
+    return [(uid, user_data[uid]) for uid in selected]
+
+async def thief_event(channel):
+    try:
+        if not user_data:
+            return await channel.send("🕵️ No players yet...")
+        targets = pick_weighted_users(3)
+        if not targets:
+            return await channel.send("🕵️ The thief found no worthy targets tonight... (need players with ≥5 CP)")
+        
+        results = []
+        thief_names = ["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"]
+        thief_name = random.choice(thief_names)
+        total_stolen = 0
+
+        for uid, cp in targets:
+            steal_percent = random.uniform(0.06, 0.18)
+            stolen = max(15, int(cp * steal_percent))
+            stolen = min(stolen, cp)
+            user_data[uid] -= stolen
+            total_stolen += stolen
+            results.append((uid, stolen))
+
+        save_all()
+
+        msg = f"**🕵️ {thief_name} has struck in the night!**\n\n"
+        for uid, stolen in results:
+            msg += f"<@{uid}> lost **{stolen} CP**\n"
+        msg += f"\n**Total Stolen:** {total_stolen} CP"
+        await channel.send(msg)
+    except Exception as e:
+        error_msg = f"🕵️ **Thief event failed**: {type(e).__name__} → {e}"
+        print(error_msg)
+        await channel.send(error_msg)
+
+@tasks.loop(hours=24)
+async def run_thief():
+    channel = bot.get_channel(CHANNEL_ID)
+    if channel:
+        await thief_event(channel)
+
+@run_thief.before_loop
+async def before_thief():
+    await bot.wait_until_ready()
+
+# ================== KEEP ALIVE ==================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive! ✅"
+
+@app.route('/ping')
+def ping():
+    return "pong", 200
+
+def keep_alive():
+    Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
 # ================== COMMANDS ==================
 @bot.command()
@@ -567,20 +569,22 @@ async def stealnow(ctx):
         return await ctx.send("❌ Only the owner can force the thief event.")
     await thief_event(ctx.channel)
 
-# NEW DEBUG COMMAND
 @bot.command()
 async def thiefdebug(ctx):
     if ctx.author.id != INFINITE_USER_ID:
         return await ctx.send("❌ Owner only.")
-    await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}\n`user_data = {user_data}`")
+    await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}\nTotal players: {len(user_data)}")
 
 # ================== EVENTS ==================
 @bot.event
 async def on_ready():
+    global last_activity
     load_all()
+    last_activity = datetime.utcnow()
     print(f"✅ {bot.user} is online!")
     keep_alive()
     run_thief.start()
+    inactivity_check.start()
     
     async def autosave():
         while True:
@@ -592,6 +596,9 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot:
         return
+    # Reset inactivity timer on every message
+    global last_activity
+    last_activity = datetime.utcnow()
     await bot.process_commands(message)
 
 # ================== RUN ==================

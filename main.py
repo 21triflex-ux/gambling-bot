@@ -26,10 +26,6 @@ DATA_FILE = "user_data.json"
 DAILY_FILE = "daily_data.json"
 CHANNEL_ID = 123456789012345678  # ←←← CHANGE TO YOUR REAL CHANNEL ID
 
-# Inactivity auto-sleep
-INACTIVITY_TIMEOUT = 180  # 3 minutes
-last_activity = None
-
 # Global for RPS
 rps_games = {}
 
@@ -54,7 +50,6 @@ def load_all():
     global user_data, daily_data
     user_data = load_json(DATA_FILE)
     daily_data = load_json(DAILY_FILE)
-    
     # Data repair
     for uid in list(user_data.keys()):
         stats = user_data[uid]
@@ -76,16 +71,6 @@ def get_user(user_id):
     if uid not in user_data:
         user_data[uid] = {"cp": START_CP, "wins": 0, "losses": 0, "earned": 0}
     return user_data[uid]
-
-# ================== INACTIVITY AUTO-SLEEP ==================
-@tasks.loop(seconds=30)
-async def inactivity_check():
-    global last_activity
-    if last_activity is None:
-        return
-    if (datetime.utcnow() - last_activity).total_seconds() > INACTIVITY_TIMEOUT:
-        print(f"🛑 No activity for 3 minutes → Shutting down bot...")
-        await bot.close()
 
 # ================== CARDS ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
@@ -290,7 +275,7 @@ class RPSView(View):
         if self.game_id in rps_games:
             del rps_games[self.game_id]
 
-# ================== THIEF EVENT (FIXED) ==================
+# ================== THIEF EVENT (fixed) ==================
 def pick_weighted_users(count=3):
     users = []
     for uid, stats in user_data.items():
@@ -300,16 +285,13 @@ def pick_weighted_users(count=3):
                 users.append((uid, balance))
     if len(users) < count:
         return users[:count]
-    
     weighted = []
     for uid, balance in users:
         weight = max(1, int(balance ** 0.5))
         weighted.extend([uid] * weight)
-    
     selected = set()
     while len(selected) < count and weighted:
         selected.add(random.choice(weighted))
-    
     return [(uid, user_data[uid]["cp"]) for uid in selected]
 
 async def thief_event(channel):
@@ -319,21 +301,17 @@ async def thief_event(channel):
         targets = pick_weighted_users(3)
         if not targets:
             return await channel.send("🕵️ The thief found no worthy targets tonight... (need players with ≥5 CP)")
-        
         results = []
         thief_name = random.choice(["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"])
         total_stolen = 0
-
         for uid, balance in targets:
             steal_percent = random.uniform(0.06, 0.18)
             stolen = max(15, int(balance * steal_percent))
             stolen = min(stolen, balance)
-            user_data[uid]["cp"] -= stolen          # ← FIXED HERE
+            user_data[uid]["cp"] -= stolen
             total_stolen += stolen
             results.append((uid, stolen))
-
         save_all()
-
         msg = f"**🕵️ {thief_name} has struck in the night!**\n\n"
         for uid, stolen in results:
             msg += f"<@{uid}> lost **{stolen} CP**\n"
@@ -368,7 +346,7 @@ def ping():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
-# ================== COMMANDS (unchanged) ==================
+# ================== COMMANDS ==================
 @bot.command()
 async def balance(ctx):
     if ctx.author.id == INFINITE_USER_ID:
@@ -563,13 +541,10 @@ async def thiefdebug(ctx):
 # ================== EVENTS ==================
 @bot.event
 async def on_ready():
-    global last_activity
     load_all()
-    last_activity = datetime.utcnow()
     print(f"✅ {bot.user} is online!")
     keep_alive()
     run_thief.start()
-    inactivity_check.start()
     
     async def autosave():
         while True:
@@ -581,8 +556,6 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot:
         return
-    global last_activity
-    last_activity = datetime.utcnow()
     await bot.process_commands(message)
 
 # ================== RUN ==================

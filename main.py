@@ -26,11 +26,11 @@ DATA_FILE = "user_data.json"
 DAILY_FILE = "daily_data.json"
 CHANNEL_ID = 123456789012345678  # ←←← CHANGE TO YOUR REAL CHANNEL ID
 
-# Inactivity auto-sleep settings
-INACTIVITY_TIMEOUT = 180  # 3 minutes in seconds
+# Inactivity auto-sleep
+INACTIVITY_TIMEOUT = 180  # 3 minutes
 last_activity = None
 
-# Global for RPS games
+# Global for RPS
 rps_games = {}
 
 # ================== DATA MANAGEMENT ==================
@@ -55,7 +55,7 @@ def load_all():
     user_data = load_json(DATA_FILE)
     daily_data = load_json(DAILY_FILE)
     
-    # Data repair for old/corrupted entries
+    # Data repair
     for uid in list(user_data.keys()):
         stats = user_data[uid]
         if not isinstance(stats.get("cp"), int):
@@ -83,12 +83,11 @@ async def inactivity_check():
     global last_activity
     if last_activity is None:
         return
-    seconds_since = (datetime.utcnow() - last_activity).total_seconds()
-    if seconds_since > INACTIVITY_TIMEOUT:
-        print(f"🛑 No activity for {INACTIVITY_TIMEOUT//60} minutes → Shutting down bot...")
+    if (datetime.utcnow() - last_activity).total_seconds() > INACTIVITY_TIMEOUT:
+        print(f"🛑 No activity for 3 minutes → Shutting down bot...")
         await bot.close()
 
-# ================== CARDS (Blackjack) ==================
+# ================== CARDS ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
 
@@ -145,15 +144,11 @@ class GameView(View):
         for i, hand in enumerate(self.player_hands):
             marker = "👉 " if i == self.current and not self.done else ""
             bet_amount = self.original_bet * (2 if self.doubled_hands[i] else 1)
-            embed.add_field(
-                name=f"{marker}Hand {i+1} (Bet: {bet_amount})",
-                value=f"{' '.join(hand)} ({hand_value(hand)})",
-                inline=False
-            )
+            embed.add_field(name=f"{marker}Hand {i+1} (Bet: {bet_amount})",
+                            value=f"{' '.join(hand)} ({hand_value(hand)})", inline=False)
         dealer_cards = ' '.join(self.dealer) if reveal else self.dealer[0] + " ❓"
         dealer_val = hand_value(self.dealer) if reveal else "?"
         embed.add_field(name="Dealer", value=f"{dealer_cards} ({dealer_val})", inline=False)
-        
         balance = "∞" if self.player_id == INFINITE_USER_ID else get_user(self.player_id)["cp"]
         embed.set_footer(text=f"Balance: {balance} CP")
         return embed
@@ -168,16 +163,13 @@ class GameView(View):
     async def finish(self, interaction):
         while hand_value(self.dealer) < 17:
             self.dealer.append(draw())
-
         user = get_user(self.player_id)
         dealer_val = hand_value(self.dealer)
         net = 0
         infinite = self.player_id == INFINITE_USER_ID
-
         for i, hand in enumerate(self.player_hands):
             val = hand_value(hand)
             bet = self.original_bet * (2 if self.doubled_hands[i] else 1)
-
             if is_blackjack(hand) and not is_blackjack(self.dealer):
                 payout = int(bet * 1.5)
                 net += payout
@@ -193,10 +185,8 @@ class GameView(View):
             elif val < dealer_val:
                 if not infinite: net -= bet
                 user["losses"] += 1
-
         if not infinite:
             user["cp"] += net
-
         self.done = True
         self.clear_items()
         embed = self.get_embed(reveal=True)
@@ -237,7 +227,7 @@ class GameView(View):
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-# ================== RPS BUTTON VIEW ==================
+# ================== RPS VIEW ==================
 class RPSView(View):
     def __init__(self, player, opponent, game_id, original_channel):
         super().__init__(timeout=60)
@@ -257,7 +247,6 @@ class RPSView(View):
         game["choices"][self.player.id] = choice
         self.clear_items()
         await interaction.response.edit_message(content=f"✅ You locked in **{choice.upper()}**!", view=self)
-
         if len(game["choices"]) == 2:
             await self.resolve_game()
 
@@ -278,7 +267,6 @@ class RPSView(View):
         p1, p2 = game["players"]
         c1 = game["choices"][p1.id]
         c2 = game["choices"][p2.id]
-
         if c1 == c2:
             result_msg = f"🤝 Tie! Both played **{c1}**"
             winner = None
@@ -288,9 +276,7 @@ class RPSView(View):
         else:
             winner = p2
             result_msg = f"🏆 **{p2.mention} wins 200 CP!**"
-
         await self.original_channel.send(f"**RPS Result**\n{result_msg}")
-
         bet = 200
         if winner:
             winner_user = get_user(winner.id)
@@ -301,24 +287,30 @@ class RPSView(View):
             if loser_user["cp"] >= bet:
                 loser_user["cp"] -= bet
             save_all()
-
         if self.game_id in rps_games:
             del rps_games[self.game_id]
 
-# ================== THIEF EVENT ==================
+# ================== THIEF EVENT (FIXED) ==================
 def pick_weighted_users(count=3):
-    users = [(uid, cp) for uid, cp in user_data.items() 
-             if int(uid) != INFINITE_USER_ID and cp >= 5]
+    users = []
+    for uid, stats in user_data.items():
+        if int(uid) != INFINITE_USER_ID:
+            balance = stats.get("cp", 0)
+            if balance >= 5:
+                users.append((uid, balance))
     if len(users) < count:
         return users[:count]
+    
     weighted = []
-    for uid, cp in users:
-        weight = max(1, int(cp ** 0.5))
+    for uid, balance in users:
+        weight = max(1, int(balance ** 0.5))
         weighted.extend([uid] * weight)
+    
     selected = set()
     while len(selected) < count and weighted:
         selected.add(random.choice(weighted))
-    return [(uid, user_data[uid]) for uid in selected]
+    
+    return [(uid, user_data[uid]["cp"]) for uid in selected]
 
 async def thief_event(channel):
     try:
@@ -329,15 +321,14 @@ async def thief_event(channel):
             return await channel.send("🕵️ The thief found no worthy targets tonight... (need players with ≥5 CP)")
         
         results = []
-        thief_names = ["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"]
-        thief_name = random.choice(thief_names)
+        thief_name = random.choice(["Shadow", "The Bandit", "Night Fox", "Void Walker", "Phantom"])
         total_stolen = 0
 
-        for uid, cp in targets:
+        for uid, balance in targets:
             steal_percent = random.uniform(0.06, 0.18)
-            stolen = max(15, int(cp * steal_percent))
-            stolen = min(stolen, cp)
-            user_data[uid] -= stolen
+            stolen = max(15, int(balance * steal_percent))
+            stolen = min(stolen, balance)
+            user_data[uid]["cp"] -= stolen          # ← FIXED HERE
             total_stolen += stolen
             results.append((uid, stolen))
 
@@ -377,7 +368,7 @@ def ping():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
-# ================== COMMANDS ==================
+# ================== COMMANDS (unchanged) ==================
 @bot.command()
 async def balance(ctx):
     if ctx.author.id == INFINITE_USER_ID:
@@ -484,11 +475,9 @@ async def leaderboard(ctx):
         losses = data["losses"]
         total = wins + losses
         winrate = (wins / total * 100) if total > 0 else 0
-        embed.add_field(
-            name=f"#{i} {name}",
-            value=f"💰 **{data['cp']} CP**\n🏆 Wins: {wins} | ❌ Losses: {losses}\n📊 Win Rate: {winrate:.1f}%",
-            inline=False
-        )
+        embed.add_field(name=f"#{i} {name}",
+                        value=f"💰 **{data['cp']} CP**\n🏆 Wins: {wins} | ❌ Losses: {losses}\n📊 Win Rate: {winrate:.1f}%",
+                        inline=False)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -547,11 +536,7 @@ async def rps(ctx, opponent: discord.Member):
     game_id = tuple(sorted([ctx.author.id, opponent.id]))
     if game_id in rps_games:
         return await ctx.send("❌ A game between you two is already running.")
-    rps_games[game_id] = {
-        "choices": {},
-        "players": [ctx.author, opponent],
-        "channel": ctx.channel
-    }
+    rps_games[game_id] = {"choices": {}, "players": [ctx.author, opponent], "channel": ctx.channel}
     await ctx.send(f"📩 {ctx.author.mention} & {opponent.mention} — Check your **DMs** for interactive Rock Paper Scissors buttons!")
     for player in [ctx.author, opponent]:
         view = RPSView(player, opponent, game_id, ctx.channel)
@@ -573,7 +558,7 @@ async def stealnow(ctx):
 async def thiefdebug(ctx):
     if ctx.author.id != INFINITE_USER_ID:
         return await ctx.send("❌ Owner only.")
-    await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}\nTotal players: {len(user_data)}")
+    await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}")
 
 # ================== EVENTS ==================
 @bot.event
@@ -596,7 +581,6 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot:
         return
-    # Reset inactivity timer on every message
     global last_activity
     last_activity = datetime.utcnow()
     await bot.process_commands(message)

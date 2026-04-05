@@ -527,7 +527,7 @@ async def thiefdebug(ctx):
         return await ctx.send("❌ Owner only.")
     await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}")
 # ================== STOCK MARKET COMMANDS ==================
-@bot.command(aliases=["stocks", "market"])
+@bot.command(aliases=["stocks"])
 async def market(ctx):
     if not market:
         await ctx.send("📉 Market data not loaded yet.")

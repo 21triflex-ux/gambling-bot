@@ -20,9 +20,12 @@ START_CP = 1000
 INFINITE_USER_ID = 1051632565120933898
 DATA_FILE = "user_data.json"
 DAILY_FILE = "daily_data.json"
+MARKET_FILE = "market_data.json"
 CHANNEL_ID = 123456789012345678 # ←←← CHANGE TO YOUR REAL CHANNEL ID
 # Global for RPS
 rps_games = {}
+# Global for market
+market = {}
 # ================== DATA MANAGEMENT ==================
 user_data = {}
 daily_data = {}
@@ -52,14 +55,53 @@ def load_all():
         if "wins" not in stats: stats["wins"] = 0
         if "losses" not in stats: stats["losses"] = 0
         if "earned" not in stats: stats["earned"] = 0
+        if "portfolio" not in stats: stats["portfolio"] = {}
 def save_all():
     save_json(user_data, DATA_FILE)
     save_json(daily_data, DAILY_FILE)
 def get_user(user_id):
     uid = str(user_id)
     if uid not in user_data:
-        user_data[uid] = {"cp": START_CP, "wins": 0, "losses": 0, "earned": 0}
+        user_data[uid] = {"cp": START_CP, "wins": 0, "losses": 0, "earned": 0, "portfolio": {}}
     return user_data[uid]
+# ================== STOCK MARKET ==================
+def load_market():
+    global market
+    if not os.path.exists(MARKET_FILE):
+        market = {
+            "GROK": {"name": "Grok AI", "price": 100.50, "prev_price": 100.50},
+            "XAI": {"name": "xAI Ventures", "price": 250.75, "prev_price": 250.75},
+            "DISC": {"name": "Discord Inc", "price": 78.20, "prev_price": 78.20},
+            "JACK": {"name": "Jackpot Inc", "price": 45.10, "prev_price": 45.10},
+            "THIEF": {"name": "Shadow Bank", "price": 15.90, "prev_price": 15.90}
+        }
+        save_market()
+        return
+    try:
+        with open(MARKET_FILE, "r") as f:
+            market = json.load(f)
+    except:
+        market = {
+            "GROK": {"name": "Grok AI", "price": 100.50, "prev_price": 100.50},
+            "XAI": {"name": "xAI Ventures", "price": 250.75, "prev_price": 250.75},
+            "DISC": {"name": "Discord Inc", "price": 78.20, "prev_price": 78.20},
+            "JACK": {"name": "Jackpot Inc", "price": 45.10, "prev_price": 45.10},
+            "THIEF": {"name": "Shadow Bank", "price": 15.90, "prev_price": 15.90}
+        }
+        save_market()
+def save_market():
+    with open(MARKET_FILE, "w") as f:
+        json.dump(market, f, indent=4)
+@tasks.loop(minutes=10)
+async def update_market():
+    for symbol, data in market.items():
+        change_pct = random.uniform(-0.06, 0.06)
+        data["prev_price"] = data["price"]
+        data["price"] = round(data["price"] * (1 + change_pct), 2)
+    save_market()
+@update_market.before_loop
+async def before_market():
+    await bot.wait_until_ready()
 # ================== CARDS ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
@@ -484,12 +526,84 @@ async def thiefdebug(ctx):
     if ctx.author.id != INFINITE_USER_ID:
         return await ctx.send("❌ Owner only.")
     await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}")
+# ================== STOCK MARKET COMMANDS ==================
+@bot.command(aliases=["stocks", "market"])
+async def market(ctx):
+    if not market:
+        await ctx.send("📉 Market data not loaded yet.")
+        return
+    embed = discord.Embed(title="📈 Live Stock Market", color=0x00ff00, timestamp=ctx.message.created_at)
+    for symbol, data in market.items():
+        change = ((data["price"] - data["prev_price"]) / data["prev_price"] * 100) if data["prev_price"] else 0
+        arrow = "📈" if change >= 0 else "📉"
+        embed.add_field(
+            name=f"{symbol} • {data['name']}",
+            value=f"**${data['price']:.2f}** {arrow} **{change:+.1f}%**",
+            inline=False
+        )
+    embed.set_footer(text="Prices update every 10 minutes • Use $buy / $sell / $portfolio")
+    await ctx.send(embed=embed)
+@bot.command()
+async def buy(ctx, symbol: str, quantity: int):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return await ctx.send("❌ Invalid stock symbol!")
+    if quantity <= 0:
+        return await ctx.send("❌ Quantity must be positive!")
+    user = get_user(ctx.author.id)
+    cost = market[symbol]["price"] * quantity
+    if ctx.author.id != INFINITE_USER_ID and user["cp"] < cost:
+        return await ctx.send(f"❌ Not enough CP! Need ${cost:.2f}")
+    if ctx.author.id != INFINITE_USER_ID:
+        user["cp"] -= cost
+    port = user.setdefault("portfolio", {})
+    port[symbol] = port.get(symbol, 0) + quantity
+    await ctx.send(f"✅ Bought **{quantity} {symbol}** for **${cost:.2f}**")
+    save_all()
+@bot.command()
+async def sell(ctx, symbol: str, quantity: int):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return await ctx.send("❌ Invalid stock symbol!")
+    if quantity <= 0:
+        return await ctx.send("❌ Quantity must be positive!")
+    user = get_user(ctx.author.id)
+    port = user.setdefault("portfolio", {})
+    if port.get(symbol, 0) < quantity:
+        return await ctx.send("❌ You don't own enough shares!")
+    proceeds = market[symbol]["price"] * quantity
+    port[symbol] -= quantity
+    if port[symbol] <= 0:
+        del port[symbol]
+    if ctx.author.id != INFINITE_USER_ID:
+        user["cp"] += proceeds
+    await ctx.send(f"✅ Sold **{quantity} {symbol}** for **${proceeds:.2f}**")
+    save_all()
+@bot.command(aliases=["port", "holdings"])
+async def portfolio(ctx):
+    user = get_user(ctx.author.id)
+    port = user.get("portfolio", {})
+    if not port:
+        return await ctx.send("📉 You don't own any stocks yet. Use `$market` to see prices!")
+    embed = discord.Embed(title=f"📊 {ctx.author.display_name}'s Portfolio", color=0x00ff00)
+    total_value = 0
+    for symbol, qty in port.items():
+        if symbol in market:
+            price = market[symbol]["price"]
+            value = price * qty
+            total_value += value
+            embed.add_field(name=symbol, value=f"{qty} shares @ **${price:.2f}** = **${value:.2f}**", inline=False)
+    embed.set_footer(text=f"Total Value: ${total_value:.2f} CP")
+    await ctx.send(embed=embed)
 # ================== EVENTS ==================
 @bot.event
 async def on_ready():
     load_all()
+    load_market()
     print(f"✅ {bot.user} is online!")
+    keep_alive()
     run_thief.start()
+    update_market.start()
    
     async def autosave():
         while True:
@@ -503,5 +617,4 @@ async def on_message(message):
     await bot.process_commands(message)
 # ================== RUN ==================
 if __name__ == "__main__":
-    keep_alive()
     bot.run(token, reconnect=True)

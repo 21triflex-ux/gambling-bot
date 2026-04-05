@@ -9,6 +9,10 @@ from flask import Flask
 from discord.ui import View, button
 from datetime import datetime
 import asyncio
+import matplotlib
+matplotlib.use('Agg')  # required for headless servers like Render
+import matplotlib.pyplot as plt
+import io
 load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
@@ -44,7 +48,6 @@ def load_all():
     global user_data, daily_data
     user_data = load_json(DATA_FILE)
     daily_data = load_json(DAILY_FILE)
-    # Data repair
     for uid in list(user_data.keys()):
         stats = user_data[uid]
         if not isinstance(stats.get("cp"), int):
@@ -69,11 +72,11 @@ def load_market():
     global market
     if not os.path.exists(MARKET_FILE):
         market = {
-            "GROK": {"name": "Grok AI", "price": 100.50, "prev_price": 100.50},
-            "XAI": {"name": "xAI Ventures", "price": 250.75, "prev_price": 250.75},
-            "DISC": {"name": "Discord Inc", "price": 78.20, "prev_price": 78.20},
-            "JACK": {"name": "Jackpot Inc", "price": 45.10, "prev_price": 45.10},
-            "THIEF": {"name": "Shadow Bank", "price": 15.90, "prev_price": 15.90}
+            "GROK": {"name": "Grok AI", "price": 100.50, "prev_price": 100.50, "history": [100.50]},
+            "XAI": {"name": "xAI Ventures", "price": 250.75, "prev_price": 250.75, "history": [250.75]},
+            "DISC": {"name": "Discord Inc", "price": 78.20, "prev_price": 78.20, "history": [78.20]},
+            "JACK": {"name": "Jackpot Inc", "price": 45.10, "prev_price": 45.10, "history": [45.10]},
+            "THIEF": {"name": "Shadow Bank", "price": 15.90, "prev_price": 15.90, "history": [15.90]}
         }
         save_market()
         return
@@ -82,13 +85,18 @@ def load_market():
             market = json.load(f)
     except:
         market = {
-            "GROK": {"name": "Grok AI", "price": 100.50, "prev_price": 100.50},
-            "XAI": {"name": "xAI Ventures", "price": 250.75, "prev_price": 250.75},
-            "DISC": {"name": "Discord Inc", "price": 78.20, "prev_price": 78.20},
-            "JACK": {"name": "Jackpot Inc", "price": 45.10, "prev_price": 45.10},
-            "THIEF": {"name": "Shadow Bank", "price": 15.90, "prev_price": 15.90}
+            "GROK": {"name": "Grok AI", "price": 100.50, "prev_price": 100.50, "history": [100.50]},
+            "XAI": {"name": "xAI Ventures", "price": 250.75, "prev_price": 250.75, "history": [250.75]},
+            "DISC": {"name": "Discord Inc", "price": 78.20, "prev_price": 78.20, "history": [78.20]},
+            "JACK": {"name": "Jackpot Inc", "price": 45.10, "prev_price": 45.10, "history": [45.10]},
+            "THIEF": {"name": "Shadow Bank", "price": 15.90, "prev_price": 15.90, "history": [15.90]}
         }
         save_market()
+        return
+    # Repair old data
+    for data in market.values():
+        if "history" not in data or not isinstance(data["history"], list):
+            data["history"] = [data.get("price", 100.0)]
 def save_market():
     with open(MARKET_FILE, "w") as f:
         json.dump(market, f, indent=4)
@@ -98,6 +106,9 @@ async def update_market():
         change_pct = random.uniform(-0.06, 0.06)
         data["prev_price"] = data["price"]
         data["price"] = round(data["price"] * (1 + change_pct), 2)
+        data["history"].append(data["price"])
+        if len(data["history"]) > 30:
+            data["history"] = data["history"][-30:]
     save_market()
 @update_market.before_loop
 async def before_market():
@@ -541,7 +552,7 @@ async def market(ctx):
             value=f"**${data['price']:.2f}** {arrow} **{change:+.1f}%**",
             inline=False
         )
-    embed.set_footer(text="Prices update every 10 minutes • Use $buy / $sell / $portfolio")
+    embed.set_footer(text="Prices update every 10 minutes • Use $buy / $sell / $portfolio / $chart")
     await ctx.send(embed=embed)
 @bot.command()
 async def buy(ctx, symbol: str, quantity: int):
@@ -595,6 +606,29 @@ async def portfolio(ctx):
             embed.add_field(name=symbol, value=f"{qty} shares @ **${price:.2f}** = **${value:.2f}**", inline=False)
     embed.set_footer(text=f"Total Value: ${total_value:.2f} CP")
     await ctx.send(embed=embed)
+@bot.command(aliases=["charts", "graph"])
+async def chart(ctx, symbol: str):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return await ctx.send("❌ Invalid stock symbol! Use `$market` to see available ones.")
+    data = market[symbol]
+    if len(data.get("history", [])) < 2:
+        return await ctx.send("📉 Not enough price history yet. Wait for a few market updates (every 10 min).")
+    prices = data["history"]
+    plt.figure(figsize=(10, 5))
+    plt.plot(prices, marker='o', linestyle='-', color='#00ff00', linewidth=2)
+    plt.title(f"📈 {symbol} • {data['name']} Price History")
+    plt.xlabel("Last 30 Updates")
+    plt.ylabel("Price (CP)")
+    plt.grid(True, alpha=0.3)
+    plt.axhline(y=prices[-1], color='red', linestyle='--', alpha=0.6, label=f"Current: ${prices[-1]:.2f}")
+    plt.legend()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    plt.close()
+    file = discord.File(buf, filename=f"{symbol}_chart.png")
+    await ctx.send(f"**{symbol} Live Chart**", file=file)
 # ================== EVENTS ==================
 @bot.event
 async def on_ready():
@@ -604,7 +638,6 @@ async def on_ready():
     keep_alive()
     run_thief.start()
     update_market.start()
-   
     async def autosave():
         while True:
             await asyncio.sleep(300)

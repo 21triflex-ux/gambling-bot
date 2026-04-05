@@ -10,15 +10,17 @@ from discord.ui import View, button
 from datetime import datetime
 import asyncio
 import matplotlib
-matplotlib.use('Agg')  # required for headless servers like Render
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
+
 load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='$', intents=intents)
+
 # ================== SETTINGS ==================
 START_CP = 1000
 INFINITE_USER_ID = 1051632565120933898
@@ -26,13 +28,16 @@ DATA_FILE = "user_data.json"
 DAILY_FILE = "daily_data.json"
 MARKET_FILE = "market_data.json"
 CHANNEL_ID = 123456789012345678 # ←←← CHANGE TO YOUR REAL CHANNEL ID
+
 # Global for RPS
 rps_games = {}
 # Global for market
 market = {}
-# ================== DATA MANAGEMENT ==================
+# Global data
 user_data = {}
 daily_data = {}
+
+# ================== DATA MANAGEMENT ==================
 def load_json(file):
     if not os.path.exists(file):
         return {}
@@ -41,13 +46,16 @@ def load_json(file):
             return json.load(f)
     except:
         return {}
+
 def save_json(data, file):
     with open(file, "w") as f:
         json.dump(data, f, indent=4)
+
 def load_all():
     global user_data, daily_data
     user_data = load_json(DATA_FILE)
     daily_data = load_json(DAILY_FILE)
+    # Data repair
     for uid in list(user_data.keys()):
         stats = user_data[uid]
         if not isinstance(stats.get("cp"), int):
@@ -59,14 +67,17 @@ def load_all():
         if "losses" not in stats: stats["losses"] = 0
         if "earned" not in stats: stats["earned"] = 0
         if "portfolio" not in stats: stats["portfolio"] = {}
+
 def save_all():
     save_json(user_data, DATA_FILE)
     save_json(daily_data, DAILY_FILE)
+
 def get_user(user_id):
     uid = str(user_id)
     if uid not in user_data:
         user_data[uid] = {"cp": START_CP, "wins": 0, "losses": 0, "earned": 0, "portfolio": {}}
     return user_data[uid]
+
 # ================== STOCK MARKET ==================
 def load_market():
     global market
@@ -92,14 +103,15 @@ def load_market():
             "THIEF": {"name": "Shadow Bank", "price": 15.90, "prev_price": 15.90, "history": [15.90]}
         }
         save_market()
-        return
     # Repair old data
     for data in market.values():
         if "history" not in data or not isinstance(data["history"], list):
             data["history"] = [data.get("price", 100.0)]
+
 def save_market():
     with open(MARKET_FILE, "w") as f:
         json.dump(market, f, indent=4)
+
 @tasks.loop(minutes=10)
 async def update_market():
     for symbol, data in market.items():
@@ -110,16 +122,21 @@ async def update_market():
         if len(data["history"]) > 30:
             data["history"] = data["history"][-30:]
     save_market()
+
 @update_market.before_loop
 async def before_market():
     await bot.wait_until_ready()
+
 # ================== CARDS ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
+
 def draw():
     return random.choice(RANKS) + random.choice(SUITS)
+
 def get_rank(card):
     return ''.join(c for c in card if c.isalnum())
+
 def hand_value(hand):
     total = aces = 0
     for c in hand:
@@ -135,8 +152,10 @@ def hand_value(hand):
         total -= 10
         aces -= 1
     return total
+
 def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
+
 # ================== BLACKJACK VIEW ==================
 class GameView(View):
     def __init__(self, ctx, bet):
@@ -150,13 +169,16 @@ class GameView(View):
         self.current = 0
         self.done = False
         self.split_used = False
+
     async def interaction_check(self, interaction):
         if interaction.user.id != self.player_id:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
             return False
         return True
+
     def current_hand(self):
         return self.player_hands[self.current]
+
     def get_embed(self, reveal=False):
         embed = discord.Embed(title="🎴 Blackjack", color=0x006400)
         for i, hand in enumerate(self.player_hands):
@@ -170,12 +192,14 @@ class GameView(View):
         balance = "∞" if self.player_id == INFINITE_USER_ID else get_user(self.player_id)["cp"]
         embed.set_footer(text=f"Balance: {balance} CP")
         return embed
+
     async def next_hand(self, interaction):
         if self.current < len(self.player_hands) - 1:
             self.current += 1
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
         else:
             await self.finish(interaction)
+
     async def finish(self, interaction):
         while hand_value(self.dealer) < 17:
             self.dealer.append(draw())
@@ -209,6 +233,7 @@ class GameView(View):
         embed.set_footer(text=f"Result: {net:+} CP | Balance: {'∞' if infinite else user['cp']} CP")
         await interaction.response.edit_message(embed=embed, view=self)
         save_all()
+
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction, _):
         self.current_hand().append(draw())
@@ -216,9 +241,11 @@ class GameView(View):
             await self.next_hand(interaction)
         else:
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
     @button(label="Stand", style=discord.ButtonStyle.gray)
     async def stand(self, interaction, _):
         await self.next_hand(interaction)
+
     @button(label="Double", style=discord.ButtonStyle.blurple)
     async def double(self, interaction, _):
         if len(self.current_hand()) != 2:
@@ -227,6 +254,7 @@ class GameView(View):
         self.current_hand().append(draw())
         self.doubled_hands[self.current] = True
         await self.next_hand(interaction)
+
     @button(label="Split", style=discord.ButtonStyle.red)
     async def split(self, interaction, _):
         hand = self.current_hand()
@@ -238,6 +266,7 @@ class GameView(View):
         self.doubled_hands = [False, False]
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
 # ================== RPS VIEW ==================
 class RPSView(View):
     def __init__(self, player, opponent, game_id, original_channel):
@@ -246,8 +275,10 @@ class RPSView(View):
         self.opponent = opponent
         self.game_id = game_id
         self.original_channel = original_channel
+
     async def interaction_check(self, interaction):
         return interaction.user.id == self.player.id
+
     async def record_choice(self, interaction, choice):
         game = rps_games.get(self.game_id)
         if not game:
@@ -258,15 +289,19 @@ class RPSView(View):
         await interaction.response.edit_message(content=f"✅ You locked in **{choice.upper()}**!", view=self)
         if len(game["choices"]) == 2:
             await self.resolve_game()
+
     @button(label="🪨 Rock", style=discord.ButtonStyle.gray)
     async def rock(self, interaction, _):
         await self.record_choice(interaction, "rock")
+
     @button(label="📄 Paper", style=discord.ButtonStyle.gray)
     async def paper(self, interaction, _):
         await self.record_choice(interaction, "paper")
+
     @button(label="✂️ Scissors", style=discord.ButtonStyle.gray)
     async def scissors(self, interaction, _):
         await self.record_choice(interaction, "scissors")
+
     async def resolve_game(self):
         game = rps_games[self.game_id]
         p1, p2 = game["players"]
@@ -294,7 +329,8 @@ class RPSView(View):
             save_all()
         if self.game_id in rps_games:
             del rps_games[self.game_id]
-# ================== THIEF EVENT (fixed) ==================
+
+# ================== THIEF EVENT ==================
 def pick_weighted_users(count=3):
     users = []
     for uid, stats in user_data.items():
@@ -312,6 +348,7 @@ def pick_weighted_users(count=3):
     while len(selected) < count and weighted:
         selected.add(random.choice(weighted))
     return [(uid, user_data[uid]["cp"]) for uid in selected]
+
 async def thief_event(channel):
     try:
         if not user_data:
@@ -339,14 +376,17 @@ async def thief_event(channel):
         error_msg = f"🕵️ **Thief event failed**: {type(e).__name__} → {e}"
         print(error_msg)
         await channel.send(error_msg)
+
 @tasks.loop(hours=24)
 async def run_thief():
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
         await thief_event(channel)
+
 @run_thief.before_loop
 async def before_thief():
     await bot.wait_until_ready()
+
 # ================== KEEP ALIVE ==================
 app = Flask(__name__)
 @app.route('/')
@@ -355,8 +395,10 @@ def home():
 @app.route('/ping')
 def ping():
     return "pong", 200
+
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
+
 # ================== COMMANDS ==================
 @bot.command()
 async def balance(ctx):
@@ -364,9 +406,11 @@ async def balance(ctx):
         return await ctx.send("💰 You have **∞ CP**")
     user = get_user(ctx.author.id)
     await ctx.send(f"💰 You have **{user['cp']} CP**")
+
 @bot.command()
 async def bal(ctx):
     await balance(ctx)
+
 @bot.command()
 async def give(ctx, member: discord.Member, amount: int):
     if ctx.author.id != INFINITE_USER_ID:
@@ -377,6 +421,7 @@ async def give(ctx, member: discord.Member, amount: int):
     receiver["cp"] += amount
     await ctx.send(f"🪄 Gave **{amount} CP** to {member.mention}")
     save_all()
+
 @bot.command()
 async def blackjack(ctx, bet: int):
     user = get_user(ctx.author.id)
@@ -409,6 +454,7 @@ async def blackjack(ctx, bet: int):
         save_all()
         return
     await ctx.send(embed=view.get_embed(), view=view)
+
 @bot.command()
 async def slots(ctx, bet: int = 50):
     user = get_user(ctx.author.id)
@@ -427,6 +473,7 @@ async def slots(ctx, bet: int = 50):
     result = "🎉 **BIG WIN!**" if payout > 0 else "😢 Lost"
     await ctx.send(f"🎰 {' '.join(roll)}\n{result} → **{payout:+} CP**")
     save_all()
+
 @bot.command()
 async def send(ctx, member: discord.Member, amount: int):
     if member.id == ctx.author.id:
@@ -442,6 +489,7 @@ async def send(ctx, member: discord.Member, amount: int):
     receiver["cp"] += amount
     await ctx.send(f"✅ Sent **{amount} CP** to {member.mention}")
     save_all()
+
 @bot.command()
 async def leaderboard(ctx):
     if not user_data:
@@ -462,6 +510,7 @@ async def leaderboard(ctx):
                         value=f"💰 **{data['cp']} CP**\n🏆 Wins: {wins} | ❌ Losses: {losses}\n📊 Win Rate: {winrate:.1f}%",
                         inline=False)
     await ctx.send(embed=embed)
+
 @bot.command()
 async def dailybox(ctx):
     uid = str(ctx.author.id)
@@ -487,6 +536,7 @@ async def dailybox(ctx):
     user_daily["box"] = now.isoformat()
     await ctx.send(f"🎁 **{tier} Box** → +{reward} CP")
     save_all()
+
 @bot.command()
 async def daily(ctx):
     uid = str(ctx.author.id)
@@ -509,6 +559,7 @@ async def daily(ctx):
     data["last"] = now.isoformat()
     await ctx.send(f"🔥 **Daily Reward!**\nBase: {base} CP\nStreak: {data['streak']} (+{bonus} CP)\n💰 **Total: {total} CP**")
     save_all()
+
 @bot.command()
 async def rps(ctx, opponent: discord.Member):
     if opponent.bot or opponent == ctx.author:
@@ -527,16 +578,19 @@ async def rps(ctx, opponent: discord.Member):
             if game_id in rps_games:
                 del rps_games[game_id]
             return
+
 @bot.command()
 async def stealnow(ctx):
     if ctx.author.id != INFINITE_USER_ID:
         return await ctx.send("❌ Only the owner can force the thief event.")
     await thief_event(ctx.channel)
+
 @bot.command()
 async def thiefdebug(ctx):
     if ctx.author.id != INFINITE_USER_ID:
         return await ctx.send("❌ Owner only.")
     await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}")
+
 # ================== STOCK MARKET COMMANDS ==================
 @bot.command(aliases=["stocks"])
 async def market(ctx):
@@ -554,6 +608,7 @@ async def market(ctx):
         )
     embed.set_footer(text="Prices update every 10 minutes • Use $buy / $sell / $portfolio / $chart")
     await ctx.send(embed=embed)
+
 @bot.command()
 async def buy(ctx, symbol: str, quantity: int):
     symbol = symbol.upper()
@@ -571,6 +626,7 @@ async def buy(ctx, symbol: str, quantity: int):
     port[symbol] = port.get(symbol, 0) + quantity
     await ctx.send(f"✅ Bought **{quantity} {symbol}** for **${cost:.2f}**")
     save_all()
+
 @bot.command()
 async def sell(ctx, symbol: str, quantity: int):
     symbol = symbol.upper()
@@ -590,6 +646,7 @@ async def sell(ctx, symbol: str, quantity: int):
         user["cp"] += proceeds
     await ctx.send(f"✅ Sold **{quantity} {symbol}** for **${proceeds:.2f}**")
     save_all()
+
 @bot.command(aliases=["port", "holdings"])
 async def portfolio(ctx):
     user = get_user(ctx.author.id)
@@ -606,6 +663,7 @@ async def portfolio(ctx):
             embed.add_field(name=symbol, value=f"{qty} shares @ **${price:.2f}** = **${value:.2f}**", inline=False)
     embed.set_footer(text=f"Total Value: ${total_value:.2f} CP")
     await ctx.send(embed=embed)
+
 @bot.command(aliases=["charts", "graph"])
 async def chart(ctx, symbol: str):
     symbol = symbol.upper()
@@ -629,6 +687,7 @@ async def chart(ctx, symbol: str):
     plt.close()
     file = discord.File(buf, filename=f"{symbol}_chart.png")
     await ctx.send(f"**{symbol} Live Chart**", file=file)
+
 # ================== EVENTS ==================
 @bot.event
 async def on_ready():
@@ -638,16 +697,19 @@ async def on_ready():
     keep_alive()
     run_thief.start()
     update_market.start()
+   
     async def autosave():
         while True:
             await asyncio.sleep(300)
             save_all()
     bot.loop.create_task(autosave())
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
     await bot.process_commands(message)
+
 # ================== RUN ==================
 if __name__ == "__main__":
     bot.run(token, reconnect=True)

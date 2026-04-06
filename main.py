@@ -126,9 +126,6 @@ async def before_market():
     await bot.wait_until_ready()
 
 # ================== CARDS (Blackjack + RPS + Thief unchanged) ==================
-# [All the same as before - Blackjack View, RPS View, thief_event, etc.]
-# (I kept them exactly the same so nothing breaks)
-
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
 
@@ -158,7 +155,6 @@ def is_blackjack(hand):
     return len(hand) == 2 and hand_value(hand) == 21
 
 class GameView(View):
-    # ... (full Blackjack View - unchanged) ...
     def __init__(self, ctx, bet):
         super().__init__(timeout=None)
         self.ctx = ctx
@@ -269,7 +265,6 @@ class GameView(View):
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
 class RPSView(View):
-    # ... (full RPS View - unchanged) ...
     def __init__(self, player, opponent, game_id, original_channel):
         super().__init__(timeout=60)
         self.player = player
@@ -399,9 +394,7 @@ def ping():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
-# ================== COMMANDS (all previous + new slots) ==================
-# ... (balance, bal, give, blackjack, send, leaderboard, dailybox, daily, rps, stealnow, thiefdebug, market, buy, sell, portfolio, chart - all unchanged) ...
-
+# ================== COMMANDS ==================
 @bot.command()
 async def balance(ctx):
     if ctx.author.id == INFINITE_USER_ID:
@@ -426,7 +419,6 @@ async def give(ctx, member: discord.Member, amount: int):
 
 @bot.command()
 async def blackjack(ctx, bet: int):
-    # ... (unchanged - full blackjack command) ...
     user = get_user(ctx.author.id)
     if bet <= 0 or (ctx.author.id != INFINITE_USER_ID and bet > user["cp"]):
         return await ctx.send("❌ Invalid bet!")
@@ -458,16 +450,8 @@ async def blackjack(ctx, bet: int):
         return
     await ctx.send(embed=view.get_embed(), view=view)
 
-# ================== NEW SLOTS COMMAND (spam blocker removed) ==================
+# ================== IMPROVED SLOTS COMMAND WITH ANIMATION ==================
 MAX_BET = 5000
-
-def get_win_chance(bet):
-    if bet < 1000:
-        return 0.50
-    elif bet < 5000:
-        return 0.45
-    else:
-        return 0.35
 
 def apply_diminishing_returns(balance, winnings):
     if balance > 1_000_000:
@@ -482,10 +466,12 @@ def apply_diminishing_returns(balance, winnings):
 async def slots(ctx, bet: int):
     user_id = ctx.author.id
     user = get_user(user_id)
-    balance = user["cp"]
 
+    # Handle infinite user
     if ctx.author.id == INFINITE_USER_ID:
         balance = float('inf')
+    else:
+        balance = user["cp"]
 
     if bet <= 0:
         await ctx.send("Bet must be positive.")
@@ -497,16 +483,41 @@ async def slots(ctx, bet: int):
         await ctx.send("Not enough CP!")
         return
 
-    # Remove bet
+    # Deduct bet immediately (skip for infinite user)
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] -= bet
 
-    # Roll
-    win_chance = get_win_chance(bet)
-    win = random.random() < win_chance
+    symbols = ["🍒", "🍋", "🍊", "💎", "7️⃣"]
+
+    # Pre-determine the final result so the animation actually "lands" on it
+    final = [random.choice(symbols) for _ in range(3)]
+
+    # Initial spinning message
+    msg = await ctx.send("🎰 Spinning the reels...")
+
+    # Fancy slowing-down animation (5 frames)
+    for i in range(5):
+        if i == 4:  # final stop frame
+            spin = final[:]
+        else:
+            spin = [random.choice(symbols) for _ in range(3)]
+
+        await msg.edit(content=f"🎰 {' | '.join(spin)}")
+        await asyncio.sleep(0.20 + i * 0.08)   # gets slower each step
+
+    # Win logic
+    win = False
+    multiplier = 0
+
+    if final[0] == final[1] == final[2]:
+        multiplier = 5
+        win = True
+    elif final[0] == final[1] or final[1] == final[2]:
+        multiplier = 2
+        win = True
 
     if win:
-        winnings = bet * 2
+        winnings = bet * multiplier
         winnings = apply_diminishing_returns(balance, winnings)
         tax = int(winnings * 0.1)
         winnings_after_tax = winnings - tax
@@ -516,21 +527,26 @@ async def slots(ctx, bet: int):
             user["wins"] += 1
             user["earned"] += winnings_after_tax
 
-        await ctx.send(
-            f"🎉 You WON!\n"
-            f"Bet: {bet} CP\n"
-            f"Win: {winnings} CP\n"
-            f"Tax: {tax} CP\n"
-            f"Final: {winnings_after_tax} CP"
+        result_text = (
+            f"🎰 {' | '.join(final)}\n\n"
+            f"🎉 **WIN!** Multiplier: `x{multiplier}`\n"
+            f"Bet: `{bet}` CP\n"
+            f"Win before tax: `{winnings}` CP\n"
+            f"Tax (10%): `{tax}` CP\n"
+            f"**You gained: `{winnings_after_tax}` CP**"
         )
     else:
         if ctx.author.id != INFINITE_USER_ID:
             user["losses"] += 1
-        await ctx.send(f"💀 You lost {bet} CP")
 
+        result_text = (
+            f"🎰 {' | '.join(final)}\n\n"
+            f"💀 **You lost `{bet}` CP**"
+        )
+
+    # Final edit - everything in one clean message
+    await msg.edit(content=result_text)
     save_all()
-
-# ... (rest of commands: send, leaderboard, dailybox, daily, rps, stealnow, thiefdebug, market, buy, sell, portfolio, chart) ...
 
 @bot.command()
 async def send(ctx, member: discord.Member, amount: int):
@@ -571,7 +587,6 @@ async def leaderboard(ctx):
 
 @bot.command()
 async def dailybox(ctx):
-    # ... (unchanged) ...
     uid = str(ctx.author.id)
     now = datetime.utcnow()
     user_daily = daily_data.setdefault(uid, {})
@@ -598,7 +613,6 @@ async def dailybox(ctx):
 
 @bot.command()
 async def daily(ctx):
-    # ... (unchanged) ...
     uid = str(ctx.author.id)
     now = datetime.utcnow()
     data = daily_data.setdefault(uid, {"streak": 0, "last": None})
@@ -622,7 +636,6 @@ async def daily(ctx):
 
 @bot.command()
 async def rps(ctx, opponent: discord.Member):
-    # ... (unchanged) ...
     if opponent.bot or opponent == ctx.author:
         return await ctx.send("❌ Invalid opponent.")
     game_id = tuple(sorted([ctx.author.id, opponent.id]))
@@ -652,7 +665,7 @@ async def thiefdebug(ctx):
         return await ctx.send("❌ Owner only.")
     await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}")
 
-# STOCK MARKET COMMANDS (market, buy, sell, portfolio, chart) - unchanged
+# STOCK MARKET COMMANDS
 @bot.command(aliases=["stocks"])
 async def market(ctx):
     if not market:
@@ -758,7 +771,7 @@ async def on_ready():
     keep_alive()
     run_thief.start()
     update_market.start()
-   
+  
     async def autosave():
         while True:
             await asyncio.sleep(300)

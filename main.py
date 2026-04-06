@@ -394,6 +394,22 @@ def ping():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
+# ================== HELPER FUNCTIONS ==================
+def get_roulette_color(number: int) -> str:
+    if number == 0:
+        return "green"
+    reds = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
+    return "red" if number in reds else "black"
+
+def apply_diminishing_returns(balance, winnings):
+    if balance > 1_000_000:
+        return int(winnings * 0.4)
+    elif balance > 500_000:
+        return int(winnings * 0.5)
+    elif balance > 100_000:
+        return int(winnings * 0.7)
+    return winnings
+
 # ================== COMMANDS ==================
 @bot.command()
 async def balance(ctx):
@@ -450,24 +466,14 @@ async def blackjack(ctx, bet: int):
         return
     await ctx.send(embed=view.get_embed(), view=view)
 
-# ================== IMPROVED SLOTS COMMAND WITH ANIMATION ==================
+# ================== SLOTS (with animation) ==================
 MAX_BET = 5000
-
-def apply_diminishing_returns(balance, winnings):
-    if balance > 1_000_000:
-        return int(winnings * 0.4)
-    elif balance > 500_000:
-        return int(winnings * 0.5)
-    elif balance > 100_000:
-        return int(winnings * 0.7)
-    return winnings
 
 @bot.command()
 async def slots(ctx, bet: int):
     user_id = ctx.author.id
     user = get_user(user_id)
 
-    # Handle infinite user
     if ctx.author.id == INFINITE_USER_ID:
         balance = float('inf')
     else:
@@ -483,32 +489,24 @@ async def slots(ctx, bet: int):
         await ctx.send("Not enough CP!")
         return
 
-    # Deduct bet immediately (skip for infinite user)
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] -= bet
 
     symbols = ["🍒", "🍋", "🍊", "💎", "7️⃣"]
-
-    # Pre-determine the final result so the animation actually "lands" on it
     final = [random.choice(symbols) for _ in range(3)]
 
-    # Initial spinning message
     msg = await ctx.send("🎰 Spinning the reels...")
 
-    # Fancy slowing-down animation (5 frames)
     for i in range(5):
-        if i == 4:  # final stop frame
+        if i == 4:
             spin = final[:]
         else:
             spin = [random.choice(symbols) for _ in range(3)]
-
         await msg.edit(content=f"🎰 {' | '.join(spin)}")
-        await asyncio.sleep(0.20 + i * 0.08)   # gets slower each step
+        await asyncio.sleep(0.20 + i * 0.08)
 
-    # Win logic
     win = False
     multiplier = 0
-
     if final[0] == final[1] == final[2]:
         multiplier = 5
         win = True
@@ -538,15 +536,146 @@ async def slots(ctx, bet: int):
     else:
         if ctx.author.id != INFINITE_USER_ID:
             user["losses"] += 1
-
         result_text = (
             f"🎰 {' | '.join(final)}\n\n"
             f"💀 **You lost `{bet}` CP**"
         )
 
-    # Final edit - everything in one clean message
     await msg.edit(content=result_text)
     save_all()
+
+# ================== NEW: ROULETTE WITH ANIMATION ==================
+@bot.command()
+async def roulette(ctx, bet: int, choice: str):
+    user_id = ctx.author.id
+    user = get_user(user_id)
+
+    if ctx.author.id == INFINITE_USER_ID:
+        balance = float('inf')
+    else:
+        balance = user["cp"]
+
+    if bet <= 0:
+        await ctx.send("Bet must be positive.")
+        return
+    if bet > MAX_BET:
+        await ctx.send(f"Max bet is {MAX_BET} CP")
+        return
+    if ctx.author.id != INFINITE_USER_ID and balance < bet:
+        await ctx.send("Not enough CP!")
+        return
+
+    # Parse choice
+    choice = choice.lower().strip()
+    if choice in ["red", "black", "even", "odd"]:
+        bet_type = choice
+        chosen_number = None
+    else:
+        try:
+            num = int(choice)
+            if 0 <= num <= 36:
+                bet_type = "number"
+                chosen_number = num
+            else:
+                raise ValueError
+        except:
+            return await ctx.send("❌ Invalid choice! Use: `red`, `black`, `even`, `odd`, or a number `0-36`")
+
+    # Deduct bet
+    if ctx.author.id != INFINITE_USER_ID:
+        user["cp"] -= bet
+
+    # Pre-determine the winning number
+    winning_number = random.randint(0, 36)
+    winning_color = get_roulette_color(winning_number)
+
+    # Initial message
+    msg = await ctx.send("🎡 Spinning the roulette wheel...")
+
+    # Animation (6 steps, slowing down)
+    for i in range(6):
+        if i == 5:  # final stop
+            spin_num = winning_number
+        else:
+            spin_num = random.randint(0, 36)
+        color_emoji = "🔴" if get_roulette_color(spin_num) == "red" else "⚫" if get_roulette_color(spin_num) == "black" else "🟢"
+        await msg.edit(content=f"🎡 {spin_num} {color_emoji}")
+        await asyncio.sleep(0.18 + i * 0.09)  # starts fast, slows down nicely
+
+    # Determine win
+    win = False
+    if bet_type == "number":
+        win = (winning_number == chosen_number)
+        multiplier = 36  # 35:1 + original bet
+    else:
+        if bet_type == "red":
+            win = (winning_color == "red")
+        elif bet_type == "black":
+            win = (winning_color == "black")
+        elif bet_type == "even":
+            win = (winning_number != 0 and winning_number % 2 == 0)
+        elif bet_type == "odd":
+            win = (winning_number != 0 and winning_number % 2 == 1)
+        multiplier = 2
+
+    color_emoji_final = "🔴" if winning_color == "red" else "⚫" if winning_color == "black" else "🟢"
+
+    if win:
+        winnings = bet * multiplier
+        winnings = apply_diminishing_returns(balance, winnings)
+        tax = int(winnings * 0.1)
+        winnings_after_tax = winnings - tax
+
+        if ctx.author.id != INFINITE_USER_ID:
+            user["cp"] += winnings_after_tax
+            user["wins"] += 1
+            user["earned"] += winnings_after_tax
+
+        result_text = (
+            f"🎡 **{winning_number}** {color_emoji_final}\n\n"
+            f"🎉 **WIN!** You bet on `{choice.upper()}`\n"
+            f"Multiplier: `x{multiplier}`\n"
+            f"Bet: `{bet}` CP\n"
+            f"Win before tax: `{winnings}` CP\n"
+            f"Tax (10%): `{tax}` CP\n"
+            f"**You gained: `{winnings_after_tax}` CP**"
+        )
+    else:
+        if ctx.author.id != INFINITE_USER_ID:
+            user["losses"] += 1
+        result_text = (
+            f"🎡 **{winning_number}** {color_emoji_final}\n\n"
+            f"💀 **You lost `{bet}` CP**\n"
+            f"You bet on `{choice.upper()}`"
+        )
+
+    await msg.edit(content=result_text)
+    save_all()
+
+# ================== NEW: STATS COMMAND ==================
+@bot.command()
+async def stats(ctx):
+    user = get_user(ctx.author.id)
+    wins = user.get("wins", 0)
+    losses = user.get("losses", 0)
+    total_games = wins + losses
+    winrate = (wins / total_games * 100) if total_games > 0 else 0.0
+    earned = user.get("earned", 0)
+
+    if ctx.author.id == INFINITE_USER_ID:
+        cp_display = "∞"
+    else:
+        cp_display = user["cp"]
+
+    embed = discord.Embed(title=f"📊 {ctx.author.display_name}'s Stats", color=0x00ff00)
+    embed.add_field(name="💰 Balance", value=f"**{cp_display} CP**", inline=False)
+    embed.add_field(name="🎮 Games Played", value=f"`{total_games}`", inline=True)
+    embed.add_field(name="🏆 Wins", value=f"`{wins}`", inline=True)
+    embed.add_field(name="💀 Losses", value=f"`{losses}`", inline=True)
+    embed.add_field(name="📈 Win Rate", value=f"`{winrate:.1f}%`", inline=True)
+    embed.add_field(name="💵 Total Earned", value=f"`{earned} CP`", inline=False)
+    embed.set_footer(text="Stats from Blackjack, Slots & Roulette")
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def send(ctx, member: discord.Member, amount: int):
@@ -652,12 +781,6 @@ async def rps(ctx, opponent: discord.Member):
             if game_id in rps_games:
                 del rps_games[game_id]
             return
-
-@bot.command()
-async def stealnow(ctx):
-    if ctx.author.id != INFINITE_USER_ID:
-        return await ctx.send("❌ Only the owner can force the thief event.")
-    await thief_event(ctx.channel)
 
 @bot.command()
 async def thiefdebug(ctx):

@@ -12,6 +12,7 @@ import asyncio
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import io
 
 load_dotenv()
@@ -65,7 +66,23 @@ def load_all():
         if "wins" not in stats: stats["wins"] = 0
         if "losses" not in stats: stats["losses"] = 0
         if "earned" not in stats: stats["earned"] = 0
-        if "portfolio" not in stats: stats["portfolio"] = {}
+        
+        # Migrate old portfolio (int qty) → new lots format with timestamps
+        if "portfolio" not in stats or not isinstance(stats.get("portfolio"), dict):
+            stats["portfolio"] = {}
+        port = stats["portfolio"]
+        migrated_port = {}
+        for sym, val in list(port.items()):
+            if not isinstance(val, list):
+                # Old simple qty → single lot (no historical time/price)
+                migrated_port[sym] = [{"qty": int(val), "buy_price": None, "buy_time": None}]
+            else:
+                migrated_port[sym] = val
+        stats["portfolio"] = migrated_port
+
+        # Ensure transactions log exists
+        if "transactions" not in stats:
+            stats["transactions"] = []
 
 def save_all():
     save_json(user_data, DATA_FILE)
@@ -74,7 +91,14 @@ def save_all():
 def get_user(user_id):
     uid = str(user_id)
     if uid not in user_data:
-        user_data[uid] = {"cp": START_CP, "wins": 0, "losses": 0, "earned": 0, "portfolio": {}}
+        user_data[uid] = {
+            "cp": START_CP,
+            "wins": 0,
+            "losses": 0,
+            "earned": 0,
+            "portfolio": {},
+            "transactions": []
+        }
     return user_data[uid]
 
 # ================== STOCK MARKET ==================
@@ -113,7 +137,8 @@ def save_market():
 @tasks.loop(minutes=10)
 async def update_market():
     for symbol, data in market.items():
-        change_pct = random.uniform(-0.06, 0.06)
+        # Slightly higher rate (upward bias) while keeping random negative days possible
+        change_pct = random.uniform(-0.045, 0.075)
         data["prev_price"] = data["price"]
         data["price"] = round(data["price"] * (1 + change_pct), 2)
         data["history"].append(data["price"])
@@ -395,12 +420,6 @@ def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
 # ================== HELPER FUNCTIONS ==================
-def get_roulette_color(number: int) -> str:
-    if number == 0:
-        return "green"
-    reds = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
-    return "red" if number in reds else "black"
-
 def apply_diminishing_returns(balance, winnings):
     if balance > 1_000_000:
         return int(winnings * 0.4)
@@ -544,7 +563,7 @@ async def slots(ctx, bet: int):
     await msg.edit(content=result_text)
     save_all()
 
-# ================== NEW: ROULETTE WITH ANIMATION ==================
+# ================== ROULETTE WITH ANIMATION ==================
 @bot.command()
 async def roulette(ctx, bet: int, choice: str):
     user_id = ctx.author.id
@@ -565,7 +584,6 @@ async def roulette(ctx, bet: int, choice: str):
         await ctx.send("Not enough CP!")
         return
 
-    # Parse choice
     choice = choice.lower().strip()
     if choice in ["red", "black", "even", "odd"]:
         bet_type = choice
@@ -581,32 +599,27 @@ async def roulette(ctx, bet: int, choice: str):
         except:
             return await ctx.send("❌ Invalid choice! Use: `red`, `black`, `even`, `odd`, or a number `0-36`")
 
-    # Deduct bet
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] -= bet
 
-    # Pre-determine the winning number
     winning_number = random.randint(0, 36)
-    winning_color = get_roulette_color(winning_number)
+    winning_color = "green" if winning_number == 0 else "red" if winning_number in [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36] else "black"
 
-    # Initial message
     msg = await ctx.send("🎡 Spinning the roulette wheel...")
 
-    # Animation (6 steps, slowing down)
     for i in range(6):
-        if i == 5:  # final stop
+        if i == 5:
             spin_num = winning_number
         else:
             spin_num = random.randint(0, 36)
-        color_emoji = "🔴" if get_roulette_color(spin_num) == "red" else "⚫" if get_roulette_color(spin_num) == "black" else "🟢"
+        color_emoji = "🟢" if spin_num == 0 else "🔴" if get_roulette_color(spin_num) == "red" else "⚫"
         await msg.edit(content=f"🎡 {spin_num} {color_emoji}")
-        await asyncio.sleep(0.18 + i * 0.09)  # starts fast, slows down nicely
+        await asyncio.sleep(0.18 + i * 0.09)
 
-    # Determine win
     win = False
     if bet_type == "number":
         win = (winning_number == chosen_number)
-        multiplier = 36  # 35:1 + original bet
+        multiplier = 36
     else:
         if bet_type == "red":
             win = (winning_color == "red")
@@ -618,7 +631,7 @@ async def roulette(ctx, bet: int, choice: str):
             win = (winning_number != 0 and winning_number % 2 == 1)
         multiplier = 2
 
-    color_emoji_final = "🔴" if winning_color == "red" else "⚫" if winning_color == "black" else "🟢"
+    color_emoji_final = "🟢" if winning_number == 0 else "🔴" if winning_color == "red" else "⚫"
 
     if win:
         winnings = bet * multiplier
@@ -652,7 +665,7 @@ async def roulette(ctx, bet: int, choice: str):
     await msg.edit(content=result_text)
     save_all()
 
-# ================== NEW: STATS COMMAND ==================
+# ================== STATS ==================
 @bot.command()
 async def stats(ctx):
     user = get_user(ctx.author.id)
@@ -676,6 +689,206 @@ async def stats(ctx):
     embed.add_field(name="💵 Total Earned", value=f"`{earned} CP`", inline=False)
     embed.set_footer(text="Stats from Blackjack, Slots & Roulette")
     await ctx.send(embed=embed)
+
+# ================== UPDATED STOCK COMMANDS (timestamps + FIFO lots + candlestick) ==================
+def get_roulette_color(number: int) -> str:
+    if number == 0:
+        return "green"
+    reds = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
+    return "red" if number in reds else "black"
+
+@bot.command()
+async def buy(ctx, symbol: str, quantity: int):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return await ctx.send("❌ Invalid stock symbol!")
+    if quantity <= 0:
+        return await ctx.send("❌ Quantity must be positive!")
+    user = get_user(ctx.author.id)
+    price = market[symbol]["price"]
+    cost = price * quantity
+    if ctx.author.id != INFINITE_USER_ID and user["cp"] < cost:
+        return await ctx.send(f"❌ Not enough CP! Need ${cost:.2f}")
+
+    # Add new buy lot with timestamp
+    port = user.setdefault("portfolio", {})
+    if symbol not in port:
+        port[symbol] = []
+    port[symbol].append({
+        "qty": quantity,
+        "buy_price": price,
+        "buy_time": datetime.utcnow().isoformat()
+    })
+
+    # Log transaction (for "joined" timestamp)
+    user.setdefault("transactions", []).append({
+        "symbol": symbol,
+        "action": "buy",
+        "qty": quantity,
+        "price": price,
+        "time": datetime.utcnow().isoformat(),
+        "total": cost
+    })
+
+    if ctx.author.id != INFINITE_USER_ID:
+        user["cp"] -= cost
+
+    await ctx.send(f"✅ Bought **{quantity} {symbol}** for **${cost:.2f}** (joined at {datetime.utcnow().strftime('%H:%M')})")
+    save_all()
+
+@bot.command()
+async def sell(ctx, symbol: str, quantity: int):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return await ctx.send("❌ Invalid stock symbol!")
+    if quantity <= 0:
+        return await ctx.send("❌ Quantity must be positive!")
+    user = get_user(ctx.author.id)
+    port = user.get("portfolio", {})
+    if symbol not in port or not port[symbol]:
+        return await ctx.send("❌ You don't own any shares of this stock!")
+
+    total_owned = sum(lot["qty"] for lot in port[symbol])
+    if total_owned < quantity:
+        return await ctx.send(f"❌ You only own {total_owned} shares!")
+
+    price = market[symbol]["price"]
+    proceeds = 0.0
+    remaining = quantity
+    i = 0
+    # FIFO: sell oldest lots first
+    while remaining > 0 and i < len(port[symbol]):
+        lot = port[symbol][i]
+        sell_qty = min(remaining, lot["qty"])
+        proceeds += sell_qty * price
+        lot["qty"] -= sell_qty
+        if lot["qty"] <= 0:
+            del port[symbol][i]
+        else:
+            i += 1
+        remaining -= sell_qty
+
+    if not port[symbol]:
+        del port[symbol]
+
+    # Log transaction (for "sold" timestamp)
+    user.setdefault("transactions", []).append({
+        "symbol": symbol,
+        "action": "sell",
+        "qty": quantity,
+        "price": price,
+        "time": datetime.utcnow().isoformat(),
+        "total": proceeds
+    })
+
+    if ctx.author.id != INFINITE_USER_ID:
+        user["cp"] += proceeds
+
+    await ctx.send(f"✅ Sold **{quantity} {symbol}** for **${proceeds:.2f}** (sold at {datetime.utcnow().strftime('%H:%M')})")
+    save_all()
+
+@bot.command(aliases=["port", "holdings"])
+async def portfolio(ctx):
+    user = get_user(ctx.author.id)
+    port = user.get("portfolio", {})
+    if not port:
+        return await ctx.send("📉 You don't own any stocks yet. Use `$market` to see prices!")
+
+    embed = discord.Embed(title=f"📊 {ctx.author.display_name}'s Portfolio", color=0x00ff00)
+    total_value = 0.0
+
+    for symbol, lots in port.items():
+        if symbol not in market:
+            continue
+        current_price = market[symbol]["price"]
+        total_qty = sum(l["qty"] for l in lots)
+        stock_value = total_qty * current_price
+        total_value += stock_value
+
+        lots_text = ""
+        for lot in lots:
+            if lot.get("buy_time"):
+                buy_dt = datetime.fromisoformat(lot["buy_time"])
+                buy_str = buy_dt.strftime("%Y-%m-%d %H:%M")
+            else:
+                buy_str = "Unknown"
+            bp = f"${lot['buy_price']:.2f}" if lot.get("buy_price") is not None else "N/A"
+            lots_text += f"• {lot['qty']} @ {bp} (joined {buy_str})\n"
+
+        embed.add_field(
+            name=f"{symbol} • {total_qty} shares (${stock_value:.2f})",
+            value=lots_text.strip() or "No lots",
+            inline=False
+        )
+
+    embed.set_footer(text=f"Total Portfolio Value: ${total_value:.2f} CP")
+
+    # Recent transactions (shows joined + sold timestamps)
+    transactions = user.get("transactions", [])[-5:]
+    if transactions:
+        trans_text = ""
+        for t in reversed(transactions):
+            ttime = datetime.fromisoformat(t["time"]).strftime("%m-%d %H:%M")
+            emoji = "🟢" if t["action"] == "buy" else "🔴"
+            trans_text += f"{emoji} {ttime} | {t['action'].upper()} {t['qty']} {t['symbol']} @ ${t['price']:.2f} = ${t['total']:.2f}\n"
+        embed.add_field(name="📜 Recent Stock Transactions", value=trans_text.strip(), inline=False)
+
+    await ctx.send(embed=embed)
+
+@bot.command(aliases=["charts", "graph"])
+async def chart(ctx, symbol: str):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return await ctx.send("❌ Invalid stock symbol! Use `$market` to see available ones.")
+    data = market[symbol]
+    prices = data.get("history", [])
+    if len(prices) < 2:
+        return await ctx.send("📉 Not enough price history yet. Wait for a few market updates (every 10 min).")
+
+    # Build fake OHLC candles from consecutive closing prices
+    candles = []
+    for i in range(1, len(prices)):
+        o = prices[i-1]
+        c = prices[i]
+        delta = abs(o - c) * 0.4 + 0.2
+        h = max(o, c) + delta
+        l = min(o, c) - delta
+        candles.append({"open": o, "high": h, "low": l, "close": c})
+
+    # Candlestick plot
+    fig, ax = plt.subplots(figsize=(12, 6))
+    width = 0.6
+    for idx, candle in enumerate(candles):
+        color = '#00ff88' if candle["close"] >= candle["open"] else '#ff4444'
+        # Body
+        body_bottom = min(candle["open"], candle["close"])
+        body_height = abs(candle["close"] - candle["open"])
+        ax.add_patch(Rectangle(
+            (idx - width / 2, body_bottom),
+            width,
+            body_height,
+            facecolor=color,
+            edgecolor="black",
+            linewidth=1
+        ))
+        # Wick
+        ax.plot([idx, idx], [candle["low"], candle["high"]], color="black", linewidth=1.5)
+
+    ax.set_title(f"📈 {symbol} • {data['name']} Candlestick Chart (Last {len(candles)} updates)")
+    ax.set_xlabel("Updates (every 10 minutes)")
+    ax.set_ylabel("Price (CP)")
+    ax.grid(True, alpha=0.3)
+    step = max(1, len(candles) // 6)
+    ax.set_xticks(range(0, len(candles), step))
+    ax.set_xticklabels([str(i) for i in range(0, len(candles), step)])
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
+    buf.seek(0)
+    plt.close()
+    file = discord.File(buf, filename=f"{symbol}_candlestick.png")
+    await ctx.send(f"**{symbol} Candlestick Chart**", file=file)
 
 @bot.command()
 async def send(ctx, member: discord.Member, amount: int):
@@ -805,85 +1018,6 @@ async def market(ctx):
         )
     embed.set_footer(text="Prices update every 10 minutes • Use $buy / $sell / $portfolio / $chart")
     await ctx.send(embed=embed)
-
-@bot.command()
-async def buy(ctx, symbol: str, quantity: int):
-    symbol = symbol.upper()
-    if symbol not in market:
-        return await ctx.send("❌ Invalid stock symbol!")
-    if quantity <= 0:
-        return await ctx.send("❌ Quantity must be positive!")
-    user = get_user(ctx.author.id)
-    cost = market[symbol]["price"] * quantity
-    if ctx.author.id != INFINITE_USER_ID and user["cp"] < cost:
-        return await ctx.send(f"❌ Not enough CP! Need ${cost:.2f}")
-    if ctx.author.id != INFINITE_USER_ID:
-        user["cp"] -= cost
-    port = user.setdefault("portfolio", {})
-    port[symbol] = port.get(symbol, 0) + quantity
-    await ctx.send(f"✅ Bought **{quantity} {symbol}** for **${cost:.2f}**")
-    save_all()
-
-@bot.command()
-async def sell(ctx, symbol: str, quantity: int):
-    symbol = symbol.upper()
-    if symbol not in market:
-        return await ctx.send("❌ Invalid stock symbol!")
-    if quantity <= 0:
-        return await ctx.send("❌ Quantity must be positive!")
-    user = get_user(ctx.author.id)
-    port = user.setdefault("portfolio", {})
-    if port.get(symbol, 0) < quantity:
-        return await ctx.send("❌ You don't own enough shares!")
-    proceeds = market[symbol]["price"] * quantity
-    port[symbol] -= quantity
-    if port[symbol] <= 0:
-        del port[symbol]
-    if ctx.author.id != INFINITE_USER_ID:
-        user["cp"] += proceeds
-    await ctx.send(f"✅ Sold **{quantity} {symbol}** for **${proceeds:.2f}**")
-    save_all()
-
-@bot.command(aliases=["port", "holdings"])
-async def portfolio(ctx):
-    user = get_user(ctx.author.id)
-    port = user.get("portfolio", {})
-    if not port:
-        return await ctx.send("📉 You don't own any stocks yet. Use `$market` to see prices!")
-    embed = discord.Embed(title=f"📊 {ctx.author.display_name}'s Portfolio", color=0x00ff00)
-    total_value = 0
-    for symbol, qty in port.items():
-        if symbol in market:
-            price = market[symbol]["price"]
-            value = price * qty
-            total_value += value
-            embed.add_field(name=symbol, value=f"{qty} shares @ **${price:.2f}** = **${value:.2f}**", inline=False)
-    embed.set_footer(text=f"Total Value: ${total_value:.2f} CP")
-    await ctx.send(embed=embed)
-
-@bot.command(aliases=["charts", "graph"])
-async def chart(ctx, symbol: str):
-    symbol = symbol.upper()
-    if symbol not in market:
-        return await ctx.send("❌ Invalid stock symbol! Use `$market` to see available ones.")
-    data = market[symbol]
-    if len(data.get("history", [])) < 2:
-        return await ctx.send("📉 Not enough price history yet. Wait for a few market updates (every 10 min).")
-    prices = data["history"]
-    plt.figure(figsize=(10, 5))
-    plt.plot(prices, marker='o', linestyle='-', color='#00ff00', linewidth=2)
-    plt.title(f"📈 {symbol} • {data['name']} Price History")
-    plt.xlabel("Last 30 Updates")
-    plt.ylabel("Price (CP)")
-    plt.grid(True, alpha=0.3)
-    plt.axhline(y=prices[-1], color='red', linestyle='--', alpha=0.6, label=f"Current: ${prices[-1]:.2f}")
-    plt.legend()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    plt.close()
-    file = discord.File(buf, filename=f"{symbol}_chart.png")
-    await ctx.send(f"**{symbol} Live Chart**", file=file)
 
 # ================== EVENTS ==================
 @bot.event

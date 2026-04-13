@@ -39,8 +39,8 @@ market = {}
 # Global data
 user_data = {}
 daily_data = {}
-# NEW: Live chart messages (symbol → message object)
-live_views = {}
+# Live full-image candlestick charts (symbol → message object)
+live_charts = {}
 
 # ================== DATA MANAGEMENT ==================
 def load_json(file):
@@ -71,7 +71,6 @@ def load_all():
         if "losses" not in stats: stats["losses"] = 0
         if "earned" not in stats: stats["earned"] = 0
        
-        # Migrate old portfolio
         if "portfolio" not in stats or not isinstance(stats.get("portfolio"), dict):
             stats["portfolio"] = {}
         port = stats["portfolio"]
@@ -135,41 +134,66 @@ def save_market():
     with open(MARKET_FILE, "w") as f:
         json.dump(market, f, indent=4)
 
-# ================== LIVE SPARKLINE HELPER ==================
-def generate_sparkline(prices, length=20):
-    if not prices or len(prices) < 2:
-        return "▁▁▁▁▁ (no data yet)"
-    recent = prices[-length:]
-    min_p = min(recent)
-    max_p = max(recent)
-    if max_p == min_p:
-        return "─" * length
-    bars = "▁▂▃▄▅▆▇█"
-    delta = (max_p - min_p) / (len(bars) - 1)
-    spark = []
-    for p in recent:
-        idx = int((p - min_p) / delta)
-        idx = max(0, min(len(bars)-1, idx))
-        spark.append(bars[idx])
-    return ''.join(spark)
+# ================== GENERATE FULL CANDLESTICK CHART FILE ==================
+def generate_chart_file(symbol: str):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return None
+    data = market[symbol]
+    prices = data.get("history", [])
+    if len(prices) < 2:
+        return None
 
-def make_live_embed(symbol: str, data: dict):
-    change_pct = ((data["price"] - data["prev_price"]) / data["prev_price"] * 100) if data.get("prev_price") else 0
-    arrow = "📈" if change_pct >= 0 else "📉"
-    color = 0x00ff00 if change_pct >= 0 else 0xff4444
-    spark = generate_sparkline(data.get("history", []))
-    embed = discord.Embed(
-        title=f"📈 LIVE {symbol} • {data['name']}",
-        description=f"**${data['price']:.2f}** {arrow} **{change_pct:+.2f}%**",
-        color=color,
-        timestamp=datetime.utcnow()
-    )
-    embed.add_field(name="Trend (last 20 updates)", value=spark, inline=False)
-    embed.set_footer(text="🔴 Live • Updates every 5 minutes • $stoplive SYMBOL to stop")
-    return embed
+    candles = []
+    for i in range(1, len(prices)):
+        o = prices[i-1]
+        c = prices[i]
+        avg_price = (o + c) / 2
+        wick_range = avg_price * random.uniform(0.018, 0.085)
+        high = max(o, c) + wick_range * random.uniform(0.6, 1.4)
+        low = min(o, c) - wick_range * random.uniform(0.6, 1.4)
+        high = max(high, max(o, c) + 0.01)
+        low = min(low, min(o, c) - 0.01)
+        candles.append({
+            "open": o, 
+            "high": round(high, 2), 
+            "low": round(low, 2), 
+            "close": c
+        })
 
-# ================== MARKET UPDATE TASK (now every 5 min) ==================
-@tasks.loop(minutes=5)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    width = 0.6
+    for idx, candle in enumerate(candles):
+        color = '#00ff88' if candle["close"] >= candle["open"] else '#ff4444'
+        body_bottom = min(candle["open"], candle["close"])
+        body_height = abs(candle["close"] - candle["open"])
+        ax.add_patch(Rectangle(
+            (idx - width / 2, body_bottom),
+            width,
+            body_height,
+            facecolor=color,
+            edgecolor="black",
+            linewidth=1
+        ))
+        ax.plot([idx, idx], [candle["low"], candle["high"]], color="black", linewidth=1.5)
+
+    ax.set_title(f"📈 {symbol} • {data['name']} LIVE Candlestick (Last {len(candles)} updates)")
+    ax.set_xlabel("Updates (every 1 min)")
+    ax.set_ylabel("Price (CP)")
+    ax.grid(True, alpha=0.3)
+    step = max(1, len(candles) // 6)
+    ax.set_xticks(range(0, len(candles), step))
+    ax.set_xticklabels([str(i) for i in range(0, len(candles), step)])
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
+    buf.seek(0)
+    plt.close()
+    return discord.File(buf, filename=f"{symbol}_candlestick.png")
+
+# ================== MARKET UPDATE (every 1 minute) ==================
+@tasks.loop(minutes=1)
 async def update_market():
     for symbol, data in market.items():
         change_pct = random.uniform(-0.065, 0.065)
@@ -180,24 +204,37 @@ async def update_market():
             data["history"] = data["history"][-30:]
     save_market()
 
-    # Auto-update all live views
-    for sym, msg in list(live_views.items()):
-        if sym not in market:
-            continue
-        try:
-            data = market[sym]
-            embed = make_live_embed(sym, data)
-            await msg.edit(embed=embed)
-        except discord.NotFound:
-            live_views.pop(sym, None)
-        except Exception:
-            pass
-
 @update_market.before_loop
 async def before_market():
     await bot.wait_until_ready()
 
-# ================== CARDS (Blackjack + RPS + Thief) ==================
+# ================== LIVE FULL-IMAGE CHART UPDATER (every 10 seconds) ==================
+@tasks.loop(seconds=10)
+async def update_live_charts():
+    for symbol, msg in list(live_charts.items()):
+        if symbol not in market:
+            continue
+        try:
+            await msg.delete()
+            file = generate_chart_file(symbol)
+            if file is None:
+                continue
+            embed = discord.Embed(
+                title=f"📈 LIVE {symbol} • {market[symbol]['name']}",
+                description="🔴 Updating every 10 seconds • Real-time candlestick",
+                color=0x00ff88,
+                timestamp=datetime.utcnow()
+            )
+            new_msg = await msg.channel.send(embed=embed, file=file)
+            live_charts[symbol] = new_msg
+        except:
+            live_charts.pop(symbol, None)
+
+@update_live_charts.before_loop
+async def before_live_charts():
+    await bot.wait_until_ready()
+
+# ================== CARDS (Blackjack) ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
 
@@ -336,6 +373,7 @@ class GameView(View):
         self.current = 0
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
+# ================== RPS ==================
 class RPSView(View):
     def __init__(self, player, opponent, game_id, original_channel):
         super().__init__(timeout=60)
@@ -398,6 +436,7 @@ class RPSView(View):
         if self.game_id in rps_games:
             del rps_games[self.game_id]
 
+# ================== THIEF EVENT ==================
 def pick_weighted_users(count=3):
     users = []
     for uid, stats in user_data.items():
@@ -537,7 +576,6 @@ async def blackjack(ctx, bet: int):
         return
     await ctx.send(embed=view.get_embed(), view=view)
 
-# ================== SLOTS ==================
 @bot.command()
 async def slots(ctx, bet: int):
     user_id = ctx.author.id
@@ -603,7 +641,6 @@ async def slots(ctx, bet: int):
     await msg.edit(content=result_text)
     save_all()
 
-# ================== ROULETTE ==================
 @bot.command()
 async def roulette(ctx, bet: int, choice: str):
     user_id = ctx.author.id
@@ -692,7 +729,6 @@ async def roulette(ctx, bet: int, choice: str):
     await msg.edit(content=result_text)
     save_all()
 
-# ================== STATS ==================
 @bot.command()
 async def stats(ctx):
     user = get_user(ctx.author.id)
@@ -715,7 +751,6 @@ async def stats(ctx):
     embed.set_footer(text="Stats from Blackjack, Slots & Roulette")
     await ctx.send(embed=embed)
 
-# ================== STOCK COMMANDS ==================
 @bot.command()
 async def buy(ctx, symbol: str, quantity: int):
     symbol = symbol.upper()
@@ -836,83 +871,47 @@ async def portfolio(ctx):
 async def chart(ctx, symbol: str):
     symbol = symbol.upper()
     if symbol not in market:
-        return await ctx.send("❌ Invalid stock symbol! Use `$market` to see available ones.")
-    data = market[symbol]
-    prices = data.get("history", [])
-    if len(prices) < 2:
-        return await ctx.send("📉 Not enough price history yet. Wait for a few market updates.")
-    candles = []
-    for i in range(1, len(prices)):
-        o = prices[i-1]
-        c = prices[i]
-        avg_price = (o + c) / 2
-        wick_range = avg_price * random.uniform(0.018, 0.085)
-        high = max(o, c) + wick_range * random.uniform(0.6, 1.4)
-        low = min(o, c) - wick_range * random.uniform(0.6, 1.4)
-        high = max(high, max(o, c) + 0.01)
-        low = min(low, min(o, c) - 0.01)
-        candles.append({
-            "open": o, 
-            "high": round(high, 2), 
-            "low": round(low, 2), 
-            "close": c
-        })
-    fig, ax = plt.subplots(figsize=(12, 6))
-    width = 0.6
-    for idx, candle in enumerate(candles):
-        color = '#00ff88' if candle["close"] >= candle["open"] else '#ff4444'
-        body_bottom = min(candle["open"], candle["close"])
-        body_height = abs(candle["close"] - candle["open"])
-        ax.add_patch(Rectangle(
-            (idx - width / 2, body_bottom),
-            width,
-            body_height,
-            facecolor=color,
-            edgecolor="black",
-            linewidth=1
-        ))
-        ax.plot([idx, idx], [candle["low"], candle["high"]], color="black", linewidth=1.5)
-    ax.set_title(f"📈 {symbol} • {data['name']} Candlestick Chart (Last {len(candles)} updates)")
-    ax.set_xlabel("Updates (every 5 minutes)")
-    ax.set_ylabel("Price (CP)")
-    ax.grid(True, alpha=0.3)
-    step = max(1, len(candles) // 6)
-    ax.set_xticks(range(0, len(candles), step))
-    ax.set_xticklabels([str(i) for i in range(0, len(candles), step)])
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
-    buf.seek(0)
-    plt.close()
-    file = discord.File(buf, filename=f"{symbol}_candlestick.png")
-    await ctx.send(f"**{symbol} Candlestick Chart**", file=file)
+        return await ctx.send("❌ Invalid stock symbol!")
+    file = generate_chart_file(symbol)
+    if file is None:
+        return await ctx.send("📉 Not enough data yet.")
+    embed = discord.Embed(title=f"📈 {symbol} Candlestick Chart", color=0x00ff88)
+    await ctx.send(embed=embed, file=file)
 
-# ================== NEW LIVE CHART COMMANDS ==================
+# ================== LIVE CHART COMMANDS ==================
 @bot.command(aliases=["live"])
 async def livechart(ctx, symbol: str):
     symbol = symbol.upper()
     if symbol not in market:
-        return await ctx.send("❌ Invalid stock symbol! Use `$market` to see available ones.")
-    if symbol in live_views:
+        return await ctx.send("❌ Invalid stock symbol!")
+    if symbol in live_charts:
         return await ctx.send("❌ A live chart for this stock is already running.")
-    
-    data = market[symbol]
-    embed = make_live_embed(symbol, data)
-    msg = await ctx.send(embed=embed)
-    live_views[symbol] = msg
-    await ctx.send(f"✅ **Live chart started for {symbol}!** It will update automatically every 5 minutes.")
+
+    file = generate_chart_file(symbol)
+    if file is None:
+        return await ctx.send("📉 Not enough data yet. Wait for market updates.")
+
+    embed = discord.Embed(
+        title=f"📈 LIVE {symbol} • {market[symbol]['name']}",
+        description="🔴 Updating every 10 seconds • Real-time candlestick",
+        color=0x00ff88,
+        timestamp=datetime.utcnow()
+    )
+    msg = await ctx.send(embed=embed, file=file)
+    live_charts[symbol] = msg
+    await ctx.send(f"✅ **Live candlestick chart started for {symbol}!** It will update every 10 seconds.")
 
 @bot.command()
 async def stoplive(ctx, symbol: str = None):
     if not symbol:
-        return await ctx.send("❌ Please specify a symbol: `$stoplive SYMBOL`")
+        return await ctx.send("❌ Use `$stoplive SYMBOL`")
     symbol = symbol.upper()
-    if symbol in live_views:
+    if symbol in live_charts:
         try:
-            await live_views[symbol].delete()
+            await live_charts[symbol].delete()
         except:
             pass
-        live_views.pop(symbol, None)
+        live_charts.pop(symbol, None)
         await ctx.send(f"✅ Stopped live chart for **{symbol}**.")
     else:
         await ctx.send(f"❌ No active live chart for **{symbol}**.")
@@ -1042,7 +1041,7 @@ async def market(ctx):
             value=f"**${data['price']:.2f}** {arrow} **{change:+.1f}%**",
             inline=False
         )
-    embed.set_footer(text="Prices update every 5 minutes • $buy / $sell / $portfolio / $chart / $livechart")
+    embed.set_footer(text="Prices update every 1 minute • $buy / $sell / $portfolio / $chart / $livechart")
     await ctx.send(embed=embed)
 
 # ================== EVENTS ==================
@@ -1050,10 +1049,11 @@ async def market(ctx):
 async def on_ready():
     load_all()
     load_market()
-    print(f"✅ {bot.user} is online! Live stock charts enabled.")
+    print(f"✅ {bot.user} is online! Full live candlestick charts enabled (updates every 10 seconds).")
     keep_alive()
     run_thief.start()
     update_market.start()
+    update_live_charts.start()
  
     async def autosave():
         while True:

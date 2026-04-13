@@ -30,7 +30,7 @@ DAILY_FILE = "daily_data.json"
 MARKET_FILE = "market_data.json"
 CHANNEL_ID = 123456789012345678 # ←←← CHANGE TO YOUR REAL CHANNEL ID
 
-MAX_BET = 10000  # ← Updated to 10,000 as requested
+MAX_BET = 10000
 
 # Global for RPS
 rps_games = {}
@@ -39,6 +39,8 @@ market = {}
 # Global data
 user_data = {}
 daily_data = {}
+# NEW: Live chart messages (symbol → message object)
+live_views = {}
 
 # ================== DATA MANAGEMENT ==================
 def load_json(file):
@@ -69,19 +71,17 @@ def load_all():
         if "losses" not in stats: stats["losses"] = 0
         if "earned" not in stats: stats["earned"] = 0
        
-        # Migrate old portfolio (int qty) → new lots format with timestamps
+        # Migrate old portfolio
         if "portfolio" not in stats or not isinstance(stats.get("portfolio"), dict):
             stats["portfolio"] = {}
         port = stats["portfolio"]
         migrated_port = {}
         for sym, val in list(port.items()):
             if not isinstance(val, list):
-                # Old simple qty → single lot (no historical time/price)
                 migrated_port[sym] = [{"qty": int(val), "buy_price": None, "buy_time": None}]
             else:
                 migrated_port[sym] = val
         stats["portfolio"] = migrated_port
-        # Ensure transactions log exists
         if "transactions" not in stats:
             stats["transactions"] = []
 
@@ -135,11 +135,43 @@ def save_market():
     with open(MARKET_FILE, "w") as f:
         json.dump(market, f, indent=4)
 
-@tasks.loop(minutes=10)
+# ================== LIVE SPARKLINE HELPER ==================
+def generate_sparkline(prices, length=20):
+    if not prices or len(prices) < 2:
+        return "▁▁▁▁▁ (no data yet)"
+    recent = prices[-length:]
+    min_p = min(recent)
+    max_p = max(recent)
+    if max_p == min_p:
+        return "─" * length
+    bars = "▁▂▃▄▅▆▇█"
+    delta = (max_p - min_p) / (len(bars) - 1)
+    spark = []
+    for p in recent:
+        idx = int((p - min_p) / delta)
+        idx = max(0, min(len(bars)-1, idx))
+        spark.append(bars[idx])
+    return ''.join(spark)
+
+def make_live_embed(symbol: str, data: dict):
+    change_pct = ((data["price"] - data["prev_price"]) / data["prev_price"] * 100) if data.get("prev_price") else 0
+    arrow = "📈" if change_pct >= 0 else "📉"
+    color = 0x00ff00 if change_pct >= 0 else 0xff4444
+    spark = generate_sparkline(data.get("history", []))
+    embed = discord.Embed(
+        title=f"📈 LIVE {symbol} • {data['name']}",
+        description=f"**${data['price']:.2f}** {arrow} **{change_pct:+.2f}%**",
+        color=color,
+        timestamp=datetime.utcnow()
+    )
+    embed.add_field(name="Trend (last 20 updates)", value=spark, inline=False)
+    embed.set_footer(text="🔴 Live • Updates every 5 minutes • $stoplive SYMBOL to stop")
+    return embed
+
+# ================== MARKET UPDATE TASK (now every 5 min) ==================
+@tasks.loop(minutes=5)
 async def update_market():
     for symbol, data in market.items():
-        # Balanced volatility - no aggressive upward bias anymore
-        # Prices now move naturally up AND down (much less predictable)
         change_pct = random.uniform(-0.065, 0.065)
         data["prev_price"] = data["price"]
         data["price"] = round(data["price"] * (1 + change_pct), 2)
@@ -148,11 +180,24 @@ async def update_market():
             data["history"] = data["history"][-30:]
     save_market()
 
+    # Auto-update all live views
+    for sym, msg in list(live_views.items()):
+        if sym not in market:
+            continue
+        try:
+            data = market[sym]
+            embed = make_live_embed(sym, data)
+            await msg.edit(embed=embed)
+        except discord.NotFound:
+            live_views.pop(sym, None)
+        except Exception:
+            pass
+
 @update_market.before_loop
 async def before_market():
     await bot.wait_until_ready()
 
-# ================== CARDS (Blackjack + RPS + Thief unchanged) ==================
+# ================== CARDS (Blackjack + RPS + Thief) ==================
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
 
@@ -492,7 +537,7 @@ async def blackjack(ctx, bet: int):
         return
     await ctx.send(embed=view.get_embed(), view=view)
 
-# ================== SLOTS (with animation) ==================
+# ================== SLOTS ==================
 @bot.command()
 async def slots(ctx, bet: int):
     user_id = ctx.author.id
@@ -525,16 +570,16 @@ async def slots(ctx, bet: int):
     win = False
     multiplier = 0
     if final[0] == final[1] == final[2]:
-        multiplier = 6          # ← Slightly better (was 5)
+        multiplier = 6
         win = True
     elif final[0] == final[1] or final[1] == final[2]:
-        multiplier = 3          # ← Slightly better (was 2)
+        multiplier = 3
         win = True
 
     if win:
         winnings = bet * multiplier
         winnings = apply_diminishing_returns(balance, winnings)
-        tax = int(winnings * 0.05)          # ← Tax lowered to 5%
+        tax = int(winnings * 0.05)
         winnings_after_tax = winnings - tax
         if ctx.author.id != INFINITE_USER_ID:
             user["cp"] += winnings_after_tax
@@ -558,7 +603,7 @@ async def slots(ctx, bet: int):
     await msg.edit(content=result_text)
     save_all()
 
-# ================== ROULETTE WITH ANIMATION ==================
+# ================== ROULETTE ==================
 @bot.command()
 async def roulette(ctx, bet: int, choice: str):
     user_id = ctx.author.id
@@ -621,7 +666,7 @@ async def roulette(ctx, bet: int, choice: str):
     if win:
         winnings = bet * multiplier
         winnings = apply_diminishing_returns(balance, winnings)
-        tax = int(winnings * 0.05)          # ← Tax lowered to 5%
+        tax = int(winnings * 0.05)
         winnings_after_tax = winnings - tax
         if ctx.author.id != INFINITE_USER_ID:
             user["cp"] += winnings_after_tax
@@ -670,7 +715,7 @@ async def stats(ctx):
     embed.set_footer(text="Stats from Blackjack, Slots & Roulette")
     await ctx.send(embed=embed)
 
-# ================== UPDATED STOCK COMMANDS (timestamps + FIFO lots + candlestick) ==================
+# ================== STOCK COMMANDS ==================
 @bot.command()
 async def buy(ctx, symbol: str, quantity: int):
     symbol = symbol.upper()
@@ -683,7 +728,6 @@ async def buy(ctx, symbol: str, quantity: int):
     cost = price * quantity
     if ctx.author.id != INFINITE_USER_ID and user["cp"] < cost:
         return await ctx.send(f"❌ Not enough CP! Need ${cost:.2f}")
-    # Add new buy lot with timestamp
     port = user.setdefault("portfolio", {})
     if symbol not in port:
         port[symbol] = []
@@ -692,7 +736,6 @@ async def buy(ctx, symbol: str, quantity: int):
         "buy_price": price,
         "buy_time": datetime.utcnow().isoformat()
     })
-    # Log transaction (for "joined" timestamp)
     user.setdefault("transactions", []).append({
         "symbol": symbol,
         "action": "buy",
@@ -724,7 +767,6 @@ async def sell(ctx, symbol: str, quantity: int):
     proceeds = 0.0
     remaining = quantity
     i = 0
-    # FIFO: sell oldest lots first
     while remaining > 0 and i < len(port[symbol]):
         lot = port[symbol][i]
         sell_qty = min(remaining, lot["qty"])
@@ -737,7 +779,6 @@ async def sell(ctx, symbol: str, quantity: int):
         remaining -= sell_qty
     if not port[symbol]:
         del port[symbol]
-    # Log transaction (for "sold" timestamp)
     user.setdefault("transactions", []).append({
         "symbol": symbol,
         "action": "sell",
@@ -781,7 +822,6 @@ async def portfolio(ctx):
             inline=False
         )
     embed.set_footer(text=f"Total Portfolio Value: ${total_value:.2f} CP")
-    # Recent transactions (shows joined + sold timestamps)
     transactions = user.get("transactions", [])[-5:]
     if transactions:
         trans_text = ""
@@ -800,37 +840,27 @@ async def chart(ctx, symbol: str):
     data = market[symbol]
     prices = data.get("history", [])
     if len(prices) < 2:
-        return await ctx.send("📉 Not enough price history yet. Wait for a few market updates (every 10 min).")
-    # Build fake OHLC candles from consecutive closing prices
+        return await ctx.send("📉 Not enough price history yet. Wait for a few market updates.")
     candles = []
     for i in range(1, len(prices)):
         o = prices[i-1]
         c = prices[i]
-        
-        # Much better wicks: realistic intraday volatility
-        # This makes the chart actually show swings and trends
         avg_price = (o + c) / 2
-        wick_range = avg_price * random.uniform(0.018, 0.085)  # 1.8%–8.5% realistic range
-        
+        wick_range = avg_price * random.uniform(0.018, 0.085)
         high = max(o, c) + wick_range * random.uniform(0.6, 1.4)
         low = min(o, c) - wick_range * random.uniform(0.6, 1.4)
-        
-        # Ensure proper candle structure
         high = max(high, max(o, c) + 0.01)
         low = min(low, min(o, c) - 0.01)
-        
         candles.append({
             "open": o, 
             "high": round(high, 2), 
             "low": round(low, 2), 
             "close": c
         })
-    # Candlestick plot
     fig, ax = plt.subplots(figsize=(12, 6))
     width = 0.6
     for idx, candle in enumerate(candles):
         color = '#00ff88' if candle["close"] >= candle["open"] else '#ff4444'
-        # Body
         body_bottom = min(candle["open"], candle["close"])
         body_height = abs(candle["close"] - candle["open"])
         ax.add_patch(Rectangle(
@@ -841,10 +871,9 @@ async def chart(ctx, symbol: str):
             edgecolor="black",
             linewidth=1
         ))
-        # Wick
         ax.plot([idx, idx], [candle["low"], candle["high"]], color="black", linewidth=1.5)
     ax.set_title(f"📈 {symbol} • {data['name']} Candlestick Chart (Last {len(candles)} updates)")
-    ax.set_xlabel("Updates (every 10 minutes)")
+    ax.set_xlabel("Updates (every 5 minutes)")
     ax.set_ylabel("Price (CP)")
     ax.grid(True, alpha=0.3)
     step = max(1, len(candles) // 6)
@@ -857,6 +886,36 @@ async def chart(ctx, symbol: str):
     plt.close()
     file = discord.File(buf, filename=f"{symbol}_candlestick.png")
     await ctx.send(f"**{symbol} Candlestick Chart**", file=file)
+
+# ================== NEW LIVE CHART COMMANDS ==================
+@bot.command(aliases=["live"])
+async def livechart(ctx, symbol: str):
+    symbol = symbol.upper()
+    if symbol not in market:
+        return await ctx.send("❌ Invalid stock symbol! Use `$market` to see available ones.")
+    if symbol in live_views:
+        return await ctx.send("❌ A live chart for this stock is already running.")
+    
+    data = market[symbol]
+    embed = make_live_embed(symbol, data)
+    msg = await ctx.send(embed=embed)
+    live_views[symbol] = msg
+    await ctx.send(f"✅ **Live chart started for {symbol}!** It will update automatically every 5 minutes.")
+
+@bot.command()
+async def stoplive(ctx, symbol: str = None):
+    if not symbol:
+        return await ctx.send("❌ Please specify a symbol: `$stoplive SYMBOL`")
+    symbol = symbol.upper()
+    if symbol in live_views:
+        try:
+            await live_views[symbol].delete()
+        except:
+            pass
+        live_views.pop(symbol, None)
+        await ctx.send(f"✅ Stopped live chart for **{symbol}**.")
+    else:
+        await ctx.send(f"❌ No active live chart for **{symbol}**.")
 
 @bot.command()
 async def send(ctx, member: discord.Member, amount: int):
@@ -969,7 +1028,6 @@ async def thiefdebug(ctx):
         return await ctx.send("❌ Owner only.")
     await ctx.send(f"**Thief Debug**\nPlayers in data: {len(user_data)}")
 
-# STOCK MARKET COMMANDS
 @bot.command(aliases=["stocks"])
 async def market(ctx):
     if not market:
@@ -984,7 +1042,7 @@ async def market(ctx):
             value=f"**${data['price']:.2f}** {arrow} **{change:+.1f}%**",
             inline=False
         )
-    embed.set_footer(text="Prices update every 10 minutes • Use $buy / $sell / $portfolio / $chart")
+    embed.set_footer(text="Prices update every 5 minutes • $buy / $sell / $portfolio / $chart / $livechart")
     await ctx.send(embed=embed)
 
 # ================== EVENTS ==================
@@ -992,7 +1050,7 @@ async def market(ctx):
 async def on_ready():
     load_all()
     load_market()
-    print(f"✅ {bot.user} is online!")
+    print(f"✅ {bot.user} is online! Live stock charts enabled.")
     keep_alive()
     run_thief.start()
     update_market.start()

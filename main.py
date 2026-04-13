@@ -30,6 +30,8 @@ DAILY_FILE = "daily_data.json"
 MARKET_FILE = "market_data.json"
 CHANNEL_ID = 123456789012345678 # ←←← CHANGE TO YOUR REAL CHANNEL ID
 
+MAX_BET = 10000  # ← Updated to 10,000 as requested
+
 # Global for RPS
 rps_games = {}
 # Global for market
@@ -66,7 +68,7 @@ def load_all():
         if "wins" not in stats: stats["wins"] = 0
         if "losses" not in stats: stats["losses"] = 0
         if "earned" not in stats: stats["earned"] = 0
-        
+       
         # Migrate old portfolio (int qty) → new lots format with timestamps
         if "portfolio" not in stats or not isinstance(stats.get("portfolio"), dict):
             stats["portfolio"] = {}
@@ -79,7 +81,6 @@ def load_all():
             else:
                 migrated_port[sym] = val
         stats["portfolio"] = migrated_port
-
         # Ensure transactions log exists
         if "transactions" not in stats:
             stats["transactions"] = []
@@ -137,8 +138,9 @@ def save_market():
 @tasks.loop(minutes=10)
 async def update_market():
     for symbol, data in market.items():
-        # Slightly higher rate (upward bias) while keeping random negative days possible
-        change_pct = random.uniform(-0.045, 0.075)
+        # Balanced volatility - no aggressive upward bias anymore
+        # Prices now move naturally up AND down (much less predictable)
+        change_pct = random.uniform(-0.065, 0.065)
         data["prev_price"] = data["price"]
         data["price"] = round(data["price"] * (1 + change_pct), 2)
         data["history"].append(data["price"])
@@ -415,7 +417,6 @@ def home():
 @app.route('/ping')
 def ping():
     return "pong", 200
-
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False), daemon=True).start()
 
@@ -428,6 +429,12 @@ def apply_diminishing_returns(balance, winnings):
     elif balance > 100_000:
         return int(winnings * 0.7)
     return winnings
+
+def get_roulette_color(number: int) -> str:
+    if number == 0:
+        return "green"
+    reds = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
+    return "red" if number in reds else "black"
 
 # ================== COMMANDS ==================
 @bot.command()
@@ -486,18 +493,14 @@ async def blackjack(ctx, bet: int):
     await ctx.send(embed=view.get_embed(), view=view)
 
 # ================== SLOTS (with animation) ==================
-MAX_BET = 5000
-
 @bot.command()
 async def slots(ctx, bet: int):
     user_id = ctx.author.id
     user = get_user(user_id)
-
     if ctx.author.id == INFINITE_USER_ID:
         balance = float('inf')
     else:
         balance = user["cp"]
-
     if bet <= 0:
         await ctx.send("Bet must be positive.")
         return
@@ -507,15 +510,11 @@ async def slots(ctx, bet: int):
     if ctx.author.id != INFINITE_USER_ID and balance < bet:
         await ctx.send("Not enough CP!")
         return
-
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] -= bet
-
     symbols = ["🍒", "🍋", "🍊", "💎", "7️⃣"]
     final = [random.choice(symbols) for _ in range(3)]
-
     msg = await ctx.send("🎰 Spinning the reels...")
-
     for i in range(5):
         if i == 4:
             spin = final[:]
@@ -523,33 +522,30 @@ async def slots(ctx, bet: int):
             spin = [random.choice(symbols) for _ in range(3)]
         await msg.edit(content=f"🎰 {' | '.join(spin)}")
         await asyncio.sleep(0.20 + i * 0.08)
-
     win = False
     multiplier = 0
     if final[0] == final[1] == final[2]:
-        multiplier = 5
+        multiplier = 6          # ← Slightly better (was 5)
         win = True
     elif final[0] == final[1] or final[1] == final[2]:
-        multiplier = 2
+        multiplier = 3          # ← Slightly better (was 2)
         win = True
 
     if win:
         winnings = bet * multiplier
         winnings = apply_diminishing_returns(balance, winnings)
-        tax = int(winnings * 0.1)
+        tax = int(winnings * 0.05)          # ← Tax lowered to 5%
         winnings_after_tax = winnings - tax
-
         if ctx.author.id != INFINITE_USER_ID:
             user["cp"] += winnings_after_tax
             user["wins"] += 1
             user["earned"] += winnings_after_tax
-
         result_text = (
             f"🎰 {' | '.join(final)}\n\n"
             f"🎉 **WIN!** Multiplier: `x{multiplier}`\n"
             f"Bet: `{bet}` CP\n"
             f"Win before tax: `{winnings}` CP\n"
-            f"Tax (10%): `{tax}` CP\n"
+            f"Tax (5%): `{tax}` CP\n"
             f"**You gained: `{winnings_after_tax}` CP**"
         )
     else:
@@ -559,7 +555,6 @@ async def slots(ctx, bet: int):
             f"🎰 {' | '.join(final)}\n\n"
             f"💀 **You lost `{bet}` CP**"
         )
-
     await msg.edit(content=result_text)
     save_all()
 
@@ -568,12 +563,10 @@ async def slots(ctx, bet: int):
 async def roulette(ctx, bet: int, choice: str):
     user_id = ctx.author.id
     user = get_user(user_id)
-
     if ctx.author.id == INFINITE_USER_ID:
         balance = float('inf')
     else:
         balance = user["cp"]
-
     if bet <= 0:
         await ctx.send("Bet must be positive.")
         return
@@ -583,7 +576,6 @@ async def roulette(ctx, bet: int, choice: str):
     if ctx.author.id != INFINITE_USER_ID and balance < bet:
         await ctx.send("Not enough CP!")
         return
-
     choice = choice.lower().strip()
     if choice in ["red", "black", "even", "odd"]:
         bet_type = choice
@@ -598,15 +590,11 @@ async def roulette(ctx, bet: int, choice: str):
                 raise ValueError
         except:
             return await ctx.send("❌ Invalid choice! Use: `red`, `black`, `even`, `odd`, or a number `0-36`")
-
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] -= bet
-
     winning_number = random.randint(0, 36)
     winning_color = "green" if winning_number == 0 else "red" if winning_number in [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36] else "black"
-
     msg = await ctx.send("🎡 Spinning the roulette wheel...")
-
     for i in range(6):
         if i == 5:
             spin_num = winning_number
@@ -615,7 +603,6 @@ async def roulette(ctx, bet: int, choice: str):
         color_emoji = "🟢" if spin_num == 0 else "🔴" if get_roulette_color(spin_num) == "red" else "⚫"
         await msg.edit(content=f"🎡 {spin_num} {color_emoji}")
         await asyncio.sleep(0.18 + i * 0.09)
-
     win = False
     if bet_type == "number":
         win = (winning_number == chosen_number)
@@ -630,27 +617,23 @@ async def roulette(ctx, bet: int, choice: str):
         elif bet_type == "odd":
             win = (winning_number != 0 and winning_number % 2 == 1)
         multiplier = 2
-
     color_emoji_final = "🟢" if winning_number == 0 else "🔴" if winning_color == "red" else "⚫"
-
     if win:
         winnings = bet * multiplier
         winnings = apply_diminishing_returns(balance, winnings)
-        tax = int(winnings * 0.1)
+        tax = int(winnings * 0.05)          # ← Tax lowered to 5%
         winnings_after_tax = winnings - tax
-
         if ctx.author.id != INFINITE_USER_ID:
             user["cp"] += winnings_after_tax
             user["wins"] += 1
             user["earned"] += winnings_after_tax
-
         result_text = (
             f"🎡 **{winning_number}** {color_emoji_final}\n\n"
             f"🎉 **WIN!** You bet on `{choice.upper()}`\n"
             f"Multiplier: `x{multiplier}`\n"
             f"Bet: `{bet}` CP\n"
             f"Win before tax: `{winnings}` CP\n"
-            f"Tax (10%): `{tax}` CP\n"
+            f"Tax (5%): `{tax}` CP\n"
             f"**You gained: `{winnings_after_tax}` CP**"
         )
     else:
@@ -661,7 +644,6 @@ async def roulette(ctx, bet: int, choice: str):
             f"💀 **You lost `{bet}` CP**\n"
             f"You bet on `{choice.upper()}`"
         )
-
     await msg.edit(content=result_text)
     save_all()
 
@@ -674,12 +656,10 @@ async def stats(ctx):
     total_games = wins + losses
     winrate = (wins / total_games * 100) if total_games > 0 else 0.0
     earned = user.get("earned", 0)
-
     if ctx.author.id == INFINITE_USER_ID:
         cp_display = "∞"
     else:
         cp_display = user["cp"]
-
     embed = discord.Embed(title=f"📊 {ctx.author.display_name}'s Stats", color=0x00ff00)
     embed.add_field(name="💰 Balance", value=f"**{cp_display} CP**", inline=False)
     embed.add_field(name="🎮 Games Played", value=f"`{total_games}`", inline=True)
@@ -691,12 +671,6 @@ async def stats(ctx):
     await ctx.send(embed=embed)
 
 # ================== UPDATED STOCK COMMANDS (timestamps + FIFO lots + candlestick) ==================
-def get_roulette_color(number: int) -> str:
-    if number == 0:
-        return "green"
-    reds = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
-    return "red" if number in reds else "black"
-
 @bot.command()
 async def buy(ctx, symbol: str, quantity: int):
     symbol = symbol.upper()
@@ -709,7 +683,6 @@ async def buy(ctx, symbol: str, quantity: int):
     cost = price * quantity
     if ctx.author.id != INFINITE_USER_ID and user["cp"] < cost:
         return await ctx.send(f"❌ Not enough CP! Need ${cost:.2f}")
-
     # Add new buy lot with timestamp
     port = user.setdefault("portfolio", {})
     if symbol not in port:
@@ -719,7 +692,6 @@ async def buy(ctx, symbol: str, quantity: int):
         "buy_price": price,
         "buy_time": datetime.utcnow().isoformat()
     })
-
     # Log transaction (for "joined" timestamp)
     user.setdefault("transactions", []).append({
         "symbol": symbol,
@@ -729,10 +701,8 @@ async def buy(ctx, symbol: str, quantity: int):
         "time": datetime.utcnow().isoformat(),
         "total": cost
     })
-
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] -= cost
-
     await ctx.send(f"✅ Bought **{quantity} {symbol}** for **${cost:.2f}** (joined at {datetime.utcnow().strftime('%H:%M')})")
     save_all()
 
@@ -747,11 +717,9 @@ async def sell(ctx, symbol: str, quantity: int):
     port = user.get("portfolio", {})
     if symbol not in port or not port[symbol]:
         return await ctx.send("❌ You don't own any shares of this stock!")
-
     total_owned = sum(lot["qty"] for lot in port[symbol])
     if total_owned < quantity:
         return await ctx.send(f"❌ You only own {total_owned} shares!")
-
     price = market[symbol]["price"]
     proceeds = 0.0
     remaining = quantity
@@ -767,10 +735,8 @@ async def sell(ctx, symbol: str, quantity: int):
         else:
             i += 1
         remaining -= sell_qty
-
     if not port[symbol]:
         del port[symbol]
-
     # Log transaction (for "sold" timestamp)
     user.setdefault("transactions", []).append({
         "symbol": symbol,
@@ -780,10 +746,8 @@ async def sell(ctx, symbol: str, quantity: int):
         "time": datetime.utcnow().isoformat(),
         "total": proceeds
     })
-
     if ctx.author.id != INFINITE_USER_ID:
         user["cp"] += proceeds
-
     await ctx.send(f"✅ Sold **{quantity} {symbol}** for **${proceeds:.2f}** (sold at {datetime.utcnow().strftime('%H:%M')})")
     save_all()
 
@@ -793,10 +757,8 @@ async def portfolio(ctx):
     port = user.get("portfolio", {})
     if not port:
         return await ctx.send("📉 You don't own any stocks yet. Use `$market` to see prices!")
-
     embed = discord.Embed(title=f"📊 {ctx.author.display_name}'s Portfolio", color=0x00ff00)
     total_value = 0.0
-
     for symbol, lots in port.items():
         if symbol not in market:
             continue
@@ -804,7 +766,6 @@ async def portfolio(ctx):
         total_qty = sum(l["qty"] for l in lots)
         stock_value = total_qty * current_price
         total_value += stock_value
-
         lots_text = ""
         for lot in lots:
             if lot.get("buy_time"):
@@ -814,15 +775,12 @@ async def portfolio(ctx):
                 buy_str = "Unknown"
             bp = f"${lot['buy_price']:.2f}" if lot.get("buy_price") is not None else "N/A"
             lots_text += f"• {lot['qty']} @ {bp} (joined {buy_str})\n"
-
         embed.add_field(
             name=f"{symbol} • {total_qty} shares (${stock_value:.2f})",
             value=lots_text.strip() or "No lots",
             inline=False
         )
-
     embed.set_footer(text=f"Total Portfolio Value: ${total_value:.2f} CP")
-
     # Recent transactions (shows joined + sold timestamps)
     transactions = user.get("transactions", [])[-5:]
     if transactions:
@@ -832,7 +790,6 @@ async def portfolio(ctx):
             emoji = "🟢" if t["action"] == "buy" else "🔴"
             trans_text += f"{emoji} {ttime} | {t['action'].upper()} {t['qty']} {t['symbol']} @ ${t['price']:.2f} = ${t['total']:.2f}\n"
         embed.add_field(name="📜 Recent Stock Transactions", value=trans_text.strip(), inline=False)
-
     await ctx.send(embed=embed)
 
 @bot.command(aliases=["charts", "graph"])
@@ -844,17 +801,30 @@ async def chart(ctx, symbol: str):
     prices = data.get("history", [])
     if len(prices) < 2:
         return await ctx.send("📉 Not enough price history yet. Wait for a few market updates (every 10 min).")
-
     # Build fake OHLC candles from consecutive closing prices
     candles = []
     for i in range(1, len(prices)):
         o = prices[i-1]
         c = prices[i]
-        delta = abs(o - c) * 0.4 + 0.2
-        h = max(o, c) + delta
-        l = min(o, c) - delta
-        candles.append({"open": o, "high": h, "low": l, "close": c})
-
+        
+        # Much better wicks: realistic intraday volatility
+        # This makes the chart actually show swings and trends
+        avg_price = (o + c) / 2
+        wick_range = avg_price * random.uniform(0.018, 0.085)  # 1.8%–8.5% realistic range
+        
+        high = max(o, c) + wick_range * random.uniform(0.6, 1.4)
+        low = min(o, c) - wick_range * random.uniform(0.6, 1.4)
+        
+        # Ensure proper candle structure
+        high = max(high, max(o, c) + 0.01)
+        low = min(low, min(o, c) - 0.01)
+        
+        candles.append({
+            "open": o, 
+            "high": round(high, 2), 
+            "low": round(low, 2), 
+            "close": c
+        })
     # Candlestick plot
     fig, ax = plt.subplots(figsize=(12, 6))
     width = 0.6
@@ -873,7 +843,6 @@ async def chart(ctx, symbol: str):
         ))
         # Wick
         ax.plot([idx, idx], [candle["low"], candle["high"]], color="black", linewidth=1.5)
-
     ax.set_title(f"📈 {symbol} • {data['name']} Candlestick Chart (Last {len(candles)} updates)")
     ax.set_xlabel("Updates (every 10 minutes)")
     ax.set_ylabel("Price (CP)")
@@ -882,7 +851,6 @@ async def chart(ctx, symbol: str):
     ax.set_xticks(range(0, len(candles), step))
     ax.set_xticklabels([str(i) for i in range(0, len(candles), step)])
     plt.tight_layout()
-
     buf = io.BytesIO()
     plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
     buf.seek(0)
@@ -1028,7 +996,7 @@ async def on_ready():
     keep_alive()
     run_thief.start()
     update_market.start()
-  
+ 
     async def autosave():
         while True:
             await asyncio.sleep(300)
